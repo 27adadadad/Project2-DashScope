@@ -1,0 +1,39 @@
+# 敏感配置
+.env
+*.env
+
+# 数据文件
+*.pdf
+*.csv
+*.parquet
+*.ipynb
+
+# GraphRAG 运行时产物
+**/data/output/
+**/data/pdf_outputs/
+**/data/pdf_csv_exports/
+**/data/pdf_prompt_turn_output/
+**/data/prompt_turn_output/
+**/data/update_output/
+**/data/logs/
+**/inputs/
+**/lancedb/
+
+# 日志
+*.log
+logs.json
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# 虚拟环境
+.venv
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
