@@ -37,3 +37,6 @@ env/
 .idea/
 .vscode/
 .DS_Store
+
+# 本地 Git 工作树
+.worktrees/
