@@ -58,6 +58,12 @@ class DashScopeService:
                 enable_thinking=thinking,
             )
             for chunk in chunks:
+                status_code = self._get_field(chunk, "status_code")
+                if status_code is not None and status_code != 200:
+                    raise DashScopeServiceError(
+                        self._status_code_category(status_code)
+                    )
+
                 message = self._get_message(chunk)
                 if message is None:
                     continue
@@ -101,10 +107,18 @@ class DashScopeService:
     @staticmethod
     def _error_category(error: Exception) -> str:
         status_code = getattr(error, "status_code", None)
+        if status_code is not None:
+            return DashScopeService._status_code_category(status_code)
+        if isinstance(error, TimeoutError) or "timeout" in type(error).__name__.lower():
+            return "timeout"
+        return "upstream"
+
+    @staticmethod
+    def _status_code_category(status_code: int) -> str:
         if status_code in (401, 403):
             return "authentication"
         if status_code == 429:
             return "rate_limit"
-        if isinstance(error, TimeoutError) or "timeout" in type(error).__name__.lower():
+        if status_code in (408, 504):
             return "timeout"
         return "upstream"

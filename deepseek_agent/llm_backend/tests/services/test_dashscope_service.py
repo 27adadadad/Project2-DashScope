@@ -61,6 +61,16 @@ async def collect_events(service, messages, *, thinking):
     return [event async for event in service.generate_stream(messages, thinking=thinking)]
 
 
+async def collect_events_until_error(service, messages, *, thinking):
+    events = []
+    try:
+        async for event in service.generate_stream(messages, thinking=thinking):
+            events.append(event)
+    except Exception as error:
+        return events, error
+    raise AssertionError("expected the stream to raise an error")
+
+
 def decode_event(event):
     return json.loads(event.removeprefix("data: ").strip())
 
@@ -136,3 +146,23 @@ def test_upstream_errors_are_safe_and_do_not_leak_api_key(monkeypatch, error, ca
 
     assert exc_info.value.category == category
     assert "test-secret-dashscope-key" not in str(exc_info.value)
+
+
+def test_non_200_response_chunk_is_safe_error_without_done(monkeypatch):
+    module = import_service(monkeypatch)
+    error_chunk = SimpleNamespace(
+        status_code=401,
+        message="unauthorized test-secret-dashscope-key",
+    )
+    service = module.DashScopeService(generation=FakeGeneration([error_chunk]))
+
+    events, error = asyncio.run(
+        collect_events_until_error(
+            service, [{"role": "user", "content": "你好"}], thinking=False
+        )
+    )
+
+    assert isinstance(error, module.DashScopeServiceError)
+    assert error.category == "authentication"
+    assert "test-secret-dashscope-key" not in str(error)
+    assert all(decode_event(event)["type"] != "done" for event in events)
