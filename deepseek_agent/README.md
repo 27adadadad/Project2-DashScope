@@ -43,6 +43,8 @@ python run.py
 
 `/api/langgraph/query` 和 `/api/langgraph/resume` 同样发送 `content`、`done` 与 `error`，并可能发送带 `conversation_id` 的 `interruption`。客户端应根据 `type` 分别处理 `reasoning` 与 `content`，在收到 `done` 后结束渲染；收到 `error` 时展示安全错误，不应依赖或展示上游原始响应。
 
+`POST /api/search` 也返回 SSE，所有负载同样位于 `data:` 行的 JSON 中，事件类型由 JSON 的 `type` 字段表示。未调用搜索工具时会先发送 `direct_answer`；调用搜索时依次发送 `search_start` 和 `search_results`（包含 `total`、`query` 与 `results`），随后会发送摘要流的 `content`、`done` 或 `error`。客户端应按 `type` 分别处理这些状态事件与正文事件。
+
 ## RAG 行为
 
 `POST /chat-rag` 依赖部署时注入的检索适配器。若未配置适配器、检索没有上下文或发生异常，服务返回 SSE `error` 事件并停止生成，以避免在没有检索依据时给出答案。
