@@ -2,40 +2,52 @@ import asyncio
 import importlib
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
-
-import pytest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
-class FakeGeneration:
-    def __init__(self, chunks=None, error=None):
+class FakeConversation:
+    def __init__(self, chunks=None):
         self.chunks = chunks or []
-        self.error = error
         self.kwargs = None
 
     def call(self, **kwargs):
         self.kwargs = kwargs
-        if self.error:
-            raise self.error
         return iter(self.chunks)
 
 
 class FakeUpstreamError(Exception):
-    def __init__(self, message, status_code):
+    def __init__(self, message, status_code=500):
         super().__init__(message)
         self.status_code = status_code
 
 
-def make_chunk(*, reasoning_content=None, content=None):
+class FailingStream:
+    def __iter__(self):
+        yield make_chunk(reasoning_content="不应暴露", content="已收到")
+        raise FakeUpstreamError("upstream failed: test-secret-dashscope-key", 429)
+
+
+class BlockingConversation(FakeConversation):
+    def call(self, **kwargs):
+        self.kwargs = kwargs
+        time.sleep(0.05)
+        return iter([make_chunk(content="线程桥接")])
+
+
+def make_chunk(*, reasoning_content=None, content=None, status_code=200):
     message = SimpleNamespace(
         reasoning_content=reasoning_content,
         content=content,
     )
-    return SimpleNamespace(output=SimpleNamespace(choices=[SimpleNamespace(message=message)]))
+    return SimpleNamespace(
+        status_code=status_code,
+        output=SimpleNamespace(choices=[SimpleNamespace(message=message)]),
+    )
 
 
 def import_service(monkeypatch):
@@ -57,34 +69,29 @@ def import_service(monkeypatch):
     return importlib.import_module("app.services.dashscope_service")
 
 
-async def collect_events(service, messages, *, thinking):
-    return [event async for event in service.generate_stream(messages, thinking=thinking)]
-
-
-async def collect_events_until_error(service, messages, *, thinking):
-    events = []
-    try:
-        async for event in service.generate_stream(messages, thinking=thinking):
-            events.append(event)
-    except Exception as error:
-        return events, error
-    raise AssertionError("expected the stream to raise an error")
+async def collect_events(service, messages, **kwargs):
+    return [event async for event in service.generate_stream(messages, **kwargs)]
 
 
 def decode_event(event):
     return json.loads(event.removeprefix("data: ").strip())
 
 
-def test_thinking_stream_separates_reasoning_answer_and_finishes(monkeypatch):
+def test_multimodal_reasoning_and_content_blocks_are_normalized(monkeypatch):
     module = import_service(monkeypatch)
-    generation = FakeGeneration(
+    conversation = FakeConversation(
         [
-            make_chunk(reasoning_content="先分析"),
-            make_chunk(reasoning_content="问题", content="答案："),
-            make_chunk(content="好的"),
+            make_chunk(reasoning_content=[{"text": "先"}, SimpleNamespace(text="分析")]),
+            make_chunk(
+                content=[
+                    {"text": "答"},
+                    {"image": "https://example.invalid/image.png"},
+                    SimpleNamespace(text="案"),
+                ]
+            ),
         ]
     )
-    service = module.DashScopeService(generation=generation)
+    service = module.DashScopeService(conversation_client=conversation)
 
     events = asyncio.run(
         collect_events(service, [{"role": "user", "content": "你好"}], thinking=True)
@@ -92,12 +99,10 @@ def test_thinking_stream_separates_reasoning_answer_and_finishes(monkeypatch):
 
     assert [decode_event(event) for event in events] == [
         {"type": "reasoning", "content": "先分析"},
-        {"type": "reasoning", "content": "问题"},
-        {"type": "content", "content": "答案："},
-        {"type": "content", "content": "好的"},
+        {"type": "content", "content": "答案"},
         {"type": "done"},
     ]
-    assert generation.kwargs == {
+    assert conversation.kwargs == {
         "api_key": "test-secret-dashscope-key",
         "model": module.settings.DASHSCOPE_REASON_MODEL,
         "messages": [{"role": "user", "content": "你好"}],
@@ -109,60 +114,94 @@ def test_thinking_stream_separates_reasoning_answer_and_finishes(monkeypatch):
     assert "\\u" not in events[0]
 
 
-def test_standard_stream_omits_reasoning_and_uses_chat_model(monkeypatch):
+def test_successful_stream_calls_on_complete_with_only_final_content(monkeypatch):
     module = import_service(monkeypatch)
-    generation = FakeGeneration(
-        [make_chunk(reasoning_content="不应暴露", content="普通回复")]
+    conversation = FakeConversation(
+        [
+            make_chunk(reasoning_content="不计入结果", content="答"),
+            make_chunk(content={"text": "案"}),
+        ]
     )
-    service = module.DashScopeService(generation=generation)
+    completed = []
+
+    async def on_complete(user_id, conversation_id, messages, response):
+        completed.append((user_id, conversation_id, messages, response))
+
+    service = module.DashScopeService(conversation_client=conversation)
+    messages = [{"role": "user", "content": "你好"}]
+    events = asyncio.run(
+        collect_events(
+            service,
+            messages,
+            thinking=True,
+            user_id=7,
+            conversation_id=11,
+            on_complete=on_complete,
+        )
+    )
+
+    assert [decode_event(event) for event in events][-1] == {"type": "done"}
+    assert completed == [(7, 11, messages, "答案")]
+
+
+def test_stream_error_becomes_safe_error_sse_without_done(monkeypatch):
+    module = import_service(monkeypatch)
+    service = module.DashScopeService(
+        conversation_client=FakeConversation(FailingStream())
+    )
+
+    events = asyncio.run(
+        collect_events(service, [{"role": "user", "content": "你好"}], thinking=False)
+    )
+
+    payloads = [decode_event(event) for event in events]
+    assert payloads == [
+        {"type": "content", "content": "已收到"},
+        {
+            "type": "error",
+            "message": "DashScope request rate limit exceeded.",
+        },
+    ]
+    assert all(payload["type"] != "done" for payload in payloads)
+    assert "test-secret-dashscope-key" not in events[-1]
+
+
+def test_non_200_response_chunk_becomes_safe_error_sse(monkeypatch):
+    module = import_service(monkeypatch)
+    error_chunk = SimpleNamespace(
+        status_code=401,
+        message="unauthorized test-secret-dashscope-key",
+    )
+    service = module.DashScopeService(
+        conversation_client=FakeConversation([error_chunk])
+    )
 
     events = asyncio.run(
         collect_events(service, [{"role": "user", "content": "你好"}], thinking=False)
     )
 
     assert [decode_event(event) for event in events] == [
-        {"type": "content", "content": "普通回复"},
-        {"type": "done"},
+        {"type": "error", "message": "DashScope authentication failed."}
     ]
-    assert generation.kwargs["model"] == module.settings.DASHSCOPE_CHAT_MODEL
-    assert generation.kwargs["enable_thinking"] is False
+    assert "test-secret-dashscope-key" not in events[0]
 
 
-@pytest.mark.parametrize(
-    ("error", "category"),
-    [
-        (FakeUpstreamError("unauthorized test-secret-dashscope-key", 401), "authentication"),
-        (FakeUpstreamError("rate limit test-secret-dashscope-key", 429), "rate_limit"),
-        (TimeoutError("timeout test-secret-dashscope-key"), "timeout"),
-        (RuntimeError("unexpected test-secret-dashscope-key"), "upstream"),
-    ],
-)
-def test_upstream_errors_are_safe_and_do_not_leak_api_key(monkeypatch, error, category):
+def test_sync_client_call_does_not_block_event_loop(monkeypatch):
     module = import_service(monkeypatch)
-    service = module.DashScopeService(generation=FakeGeneration(error=error))
+    service = module.DashScopeService(conversation_client=BlockingConversation())
 
-    with pytest.raises(module.DashScopeServiceError) as exc_info:
-        asyncio.run(collect_events(service, [{"role": "user", "content": "你好"}], thinking=False))
-
-    assert exc_info.value.category == category
-    assert "test-secret-dashscope-key" not in str(exc_info.value)
-
-
-def test_non_200_response_chunk_is_safe_error_without_done(monkeypatch):
-    module = import_service(monkeypatch)
-    error_chunk = SimpleNamespace(
-        status_code=401,
-        message="unauthorized test-secret-dashscope-key",
-    )
-    service = module.DashScopeService(generation=FakeGeneration([error_chunk]))
-
-    events, error = asyncio.run(
-        collect_events_until_error(
-            service, [{"role": "user", "content": "你好"}], thinking=False
+    async def consume_while_heartbeat_runs():
+        stream = service.generate_stream(
+            [{"role": "user", "content": "你好"}], thinking=False
         )
-    )
+        first_event = asyncio.create_task(anext(stream))
+        await asyncio.sleep(0.01)
+        yielded_before_sync_call_finished = not first_event.done()
+        event = await first_event
+        await stream.aclose()
+        return yielded_before_sync_call_finished, event
 
-    assert isinstance(error, module.DashScopeServiceError)
-    assert error.category == "authentication"
-    assert "test-secret-dashscope-key" not in str(error)
-    assert all(decode_event(event)["type"] != "done" for event in events)
+    yielded, event = asyncio.run(consume_while_heartbeat_runs())
+
+    assert yielded is True
+    assert decode_event(event) == {"type": "content", "content": "线程桥接"}

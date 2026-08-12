@@ -1,14 +1,21 @@
-"""DashScope 原生聊天接口的流式 SSE 适配器。"""
+"""DashScope 多模态聊天接口的流式 SSE 适配器。"""
 
+import asyncio
+import inspect
 import json
-from collections.abc import AsyncGenerator, Mapping
+import logging
+import threading
+from collections.abc import AsyncGenerator, Callable, Mapping
 from typing import Any, Optional
 
 from app.core.config import settings
 
 
+logger = logging.getLogger(__name__)
+
+
 class DashScopeServiceError(RuntimeError):
-    """向调用方暴露的安全 DashScope 异常，不包含上游响应内容。"""
+    """面向客户端的安全 DashScope 异常，不包含上游响应内容。"""
 
     _MESSAGES = {
         "authentication": "DashScope authentication failed.",
@@ -18,70 +25,152 @@ class DashScopeServiceError(RuntimeError):
     }
 
     def __init__(self, category: str):
-        self.category = category
-        super().__init__(self._MESSAGES[category])
+        self.category = category if category in self._MESSAGES else "upstream"
+        super().__init__(self._MESSAGES[self.category])
 
 
 class DashScopeService:
-    """将 DashScope ``Generation.call`` 的同步流转换为 SSE 事件流。"""
+    """把 DashScope ``MultiModalConversation`` 的模型流转换为 SSE。"""
 
-    def __init__(self, generation: Optional[Any] = None) -> None:
-        self._generation = generation or self._load_generation()
+    def __init__(self, conversation_client: Optional[Any] = None) -> None:
+        self._conversation_client = (
+            conversation_client or self._load_multimodal_conversation()
+        )
 
     @staticmethod
-    def _load_generation() -> Any:
-        """仅在实际调用 SDK 时导入，便于测试注入替身。"""
+    def _load_multimodal_conversation() -> Any:
+        """延迟导入 SDK，允许测试注入本地客户端替身。"""
         import dashscope
-        from dashscope import Generation
+        from dashscope import MultiModalConversation
 
         dashscope.base_http_api_url = settings.DASHSCOPE_BASE_URL
-        return Generation
+        return MultiModalConversation
 
     async def generate_stream(
-        self, messages: list[dict[str, Any]], *, thinking: bool = False
+        self,
+        messages: list[dict[str, Any]],
+        user_id: Optional[int] = None,
+        conversation_id: Optional[int] = None,
+        on_complete: Optional[Callable[..., Any]] = None,
+        *,
+        thinking: bool = False,
     ) -> AsyncGenerator[str, None]:
-        """生成带 reasoning/content/done 事件的 SSE 数据流。"""
+        """生成 reasoning、content、error 与 done 四类 SSE 事件。"""
         model = (
             settings.DASHSCOPE_REASON_MODEL
             if thinking
             else settings.DASHSCOPE_CHAT_MODEL
         )
+        request = {
+            "api_key": settings.DASHSCOPE_API_KEY,
+            "model": model,
+            "messages": messages,
+            "result_format": "message",
+            "stream": True,
+            "incremental_output": True,
+            "enable_thinking": thinking,
+        }
+        response_parts: list[str] = []
 
         try:
-            chunks = self._generation.call(
-                api_key=settings.DASHSCOPE_API_KEY,
-                model=model,
-                messages=messages,
-                result_format="message",
-                stream=True,
-                incremental_output=True,
-                enable_thinking=thinking,
-            )
-            for chunk in chunks:
-                status_code = self._get_field(chunk, "status_code")
-                if status_code is not None and status_code != 200:
-                    raise DashScopeServiceError(
-                        self._status_code_category(status_code)
-                    )
-
+            async for chunk in self._iterate_chunks(request):
+                self._raise_for_error_chunk(chunk)
                 message = self._get_message(chunk)
                 if message is None:
                     continue
 
                 if thinking:
-                    reasoning = self._get_field(message, "reasoning_content")
+                    reasoning = self._extract_text(
+                        self._get_field(message, "reasoning_content")
+                    )
                     if reasoning:
                         yield self._sse_event("reasoning", reasoning)
 
-                content = self._get_field(message, "content")
+                content = self._extract_text(self._get_field(message, "content"))
                 if content:
+                    response_parts.append(content)
                     yield self._sse_event("content", content)
 
+            response = "".join(response_parts)
+            if on_complete is not None:
+                await self._notify_complete(
+                    on_complete, user_id, conversation_id, messages, response
+                )
             yield self._sse_event("done")
-        except DashScopeServiceError:
-            raise
         except Exception as error:
-            raise DashScopeServiceError(self._error_category(error)) from None
+            service_error = self._as_service_error(error)
+            logger.error("DashScope stream failed: category=%s", service_error.category)
+            yield self._sse_event("error", message=str(service_error))
+
+    async def _iterate_chunks(
+        self, request: dict[str, Any]
+    ) -> AsyncGenerator[Any, None]:
+        call = self._conversation_client.call
+        if inspect.iscoroutinefunction(call):
+            stream = await call(**request)
+            if inspect.isawaitable(stream):
+                stream = await stream
+            if hasattr(stream, "__aiter__"):
+                async for chunk in stream:
+                    yield chunk
+                return
+            async for chunk in self._threaded_chunks(lambda: stream):
+                yield chunk
+            return
+
+        async for chunk in self._threaded_chunks(lambda: call(**request)):
+            yield chunk
+
+    @staticmethod
+    async def _threaded_chunks(
+        stream_factory: Callable[[], Any],
+    ) -> AsyncGenerator[Any, None]:
+        """用单一后台线程执行同步网络调用及迭代，避免阻塞事件循环。"""
+        event_loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+
+        def publish(kind: str, value: Any = None) -> None:
+            try:
+                event_loop.call_soon_threadsafe(queue.put_nowait, (kind, value))
+            except RuntimeError:
+                # 消费者取消后事件循环可能已关闭；后台线程无需再发布。
+                return
+
+        def produce() -> None:
+            try:
+                for chunk in stream_factory():
+                    publish("chunk", chunk)
+            except Exception as error:
+                publish("error", error)
+            finally:
+                publish("done")
+
+        threading.Thread(target=produce, name="dashscope-stream", daemon=True).start()
+        while True:
+            kind, value = await queue.get()
+            if kind == "chunk":
+                yield value
+            elif kind == "error":
+                raise value
+            else:
+                return
+
+    @staticmethod
+    async def _notify_complete(
+        callback: Callable[..., Any],
+        user_id: Optional[int],
+        conversation_id: Optional[int],
+        messages: list[dict[str, Any]],
+        response: str,
+    ) -> None:
+        if inspect.iscoroutinefunction(callback):
+            result = callback(user_id, conversation_id, messages, response)
+        else:
+            result = await asyncio.to_thread(
+                callback, user_id, conversation_id, messages, response
+            )
+        if inspect.isawaitable(result):
+            await result
 
     @staticmethod
     def _get_message(chunk: Any) -> Any:
@@ -97,12 +186,49 @@ class DashScopeService:
             return value.get(name)
         return getattr(value, name, None)
 
+    @classmethod
+    def _extract_text(cls, value: Any) -> str:
+        """统一提取 str、对象、字典和多模态内容块列表中的文本。"""
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (list, tuple)):
+            return "".join(cls._extract_text(item) for item in value)
+        if isinstance(value, Mapping):
+            for field in ("text", "content", "reasoning_content"):
+                nested = value.get(field)
+                if nested is not None:
+                    return cls._extract_text(nested)
+            return ""
+        for field in ("text", "content", "reasoning_content"):
+            nested = getattr(value, field, None)
+            if nested is not None and nested is not value:
+                return cls._extract_text(nested)
+        return ""
+
     @staticmethod
-    def _sse_event(event_type: str, content: Optional[str] = None) -> str:
+    def _sse_event(
+        event_type: str, content: Optional[str] = None, message: Optional[str] = None
+    ) -> str:
         payload: dict[str, str] = {"type": event_type}
         if content is not None:
             payload["content"] = content
+        if message is not None:
+            payload["message"] = message
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    @classmethod
+    def _raise_for_error_chunk(cls, chunk: Any) -> None:
+        status_code = cls._get_field(chunk, "status_code")
+        if status_code is not None and status_code != 200:
+            raise DashScopeServiceError(cls._status_code_category(status_code))
+
+    @classmethod
+    def _as_service_error(cls, error: Exception) -> DashScopeServiceError:
+        if isinstance(error, DashScopeServiceError):
+            return error
+        return DashScopeServiceError(cls._error_category(error))
 
     @staticmethod
     def _error_category(error: Exception) -> str:
