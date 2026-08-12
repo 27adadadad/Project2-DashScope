@@ -102,6 +102,47 @@ class DashScopeService:
             logger.error("DashScope stream failed: category=%s", service_error.category)
             yield self._sse_event("error", message=str(service_error))
 
+    async def generate_tool_response(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> Any:
+        """请求 Qwen 的单次工具调用决策，供搜索等服务使用。"""
+        request = {
+            "api_key": settings.DASHSCOPE_API_KEY,
+            "model": settings.DASHSCOPE_CHAT_MODEL,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "result_format": "message",
+            "stream": False,
+        }
+        try:
+            response = await self._call_once(request)
+            self._raise_for_error_chunk(response)
+            output = self._get_field(response, "output")
+            choices = self._get_field(output, "choices")
+            if not choices:
+                raise DashScopeServiceError("upstream")
+            return choices[0]
+        except Exception as error:
+            raise self._as_service_error(error) from None
+
+    async def generate_search_summary_stream(
+        self,
+        messages: list[dict[str, Any]],
+        user_id: Optional[int] = None,
+        conversation_id: Optional[int] = None,
+        on_complete: Optional[Callable[..., Any]] = None,
+    ) -> AsyncGenerator[str, None]:
+        """根据搜索上下文生成普通答案流。"""
+        async for event in self.generate_stream(
+            messages,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            on_complete=on_complete,
+            thinking=False,
+        ):
+            yield event
+
     async def _iterate_chunks(
         self, request: dict[str, Any]
     ) -> AsyncGenerator[Any, None]:
@@ -120,6 +161,16 @@ class DashScopeService:
 
         async for chunk in self._threaded_chunks(lambda: call(**request)):
             yield chunk
+
+    async def _call_once(self, request: dict[str, Any]) -> Any:
+        call = self._conversation_client.call
+        if inspect.iscoroutinefunction(call):
+            response = await call(**request)
+        else:
+            response = await asyncio.to_thread(call, **request)
+        if inspect.isawaitable(response):
+            response = await response
+        return response
 
     @staticmethod
     async def _threaded_chunks(
