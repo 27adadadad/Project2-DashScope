@@ -1,7 +1,10 @@
 from pathlib import Path
+import subprocess
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[1] / "app"
+BACKEND_ROOT = RUNTIME_ROOT.parent
+PROJECT_ROOT = BACKEND_ROOT.parent.parent
 FORBIDDEN_TOKENS = (
     "langchain_deepseek",
     "langchain_ollama",
@@ -12,6 +15,29 @@ FORBIDDEN_TOKENS = (
     "deepseek_service",
     "ollama_service",
 )
+FORBIDDEN_PROVIDER_NAMES = ("deepseek", "ollama")
+
+
+def _is_vendored_graphrag(path: Path) -> bool:
+    return "graphrag" in path.relative_to(BACKEND_ROOT).parts
+
+
+def _has_legacy_provider_name(path: Path) -> bool:
+    """忽略保留的包目录名，仅检查实际文件与其他目录名称。"""
+    parts = [part.lower() for part in path.relative_to(PROJECT_ROOT).parts]
+    parts = [part for part in parts if part != "deepseek_agent"]
+    return any(
+        provider in part
+        for provider in FORBIDDEN_PROVIDER_NAMES
+        for part in parts
+    )
+
+
+def _tracked_files() -> list[Path]:
+    output = subprocess.check_output(
+        ["git", "-C", str(PROJECT_ROOT), "ls-files"], text=True
+    )
+    return [PROJECT_ROOT / relative_path for relative_path in output.splitlines()]
 
 
 def test_runtime_has_no_legacy_provider_references_outside_vendored_graphrag():
@@ -32,6 +58,28 @@ def test_legacy_provider_service_and_manual_test_files_are_removed():
         "test/ollama_benchmark.py",
     ):
         assert not (RUNTIME_ROOT / relative_path).exists(), relative_path
+
+
+def test_controlled_file_names_have_no_legacy_provider_names_outside_vendor():
+    for path in _tracked_files():
+        if path.is_relative_to(RUNTIME_ROOT / "graphrag"):
+            continue
+        assert not _has_legacy_provider_name(path), path
+
+
+def test_runtime_and_current_docs_have_no_legacy_provider_content():
+    paths = [
+        *(path for path in RUNTIME_ROOT.rglob("*.py") if not _is_vendored_graphrag(path)),
+        BACKEND_ROOT.parent / "requirements.txt",
+        BACKEND_ROOT.parent / ".env.example",
+        PROJECT_ROOT / "README.md",
+        PROJECT_ROOT / "deepseek_agent" / "README.md",
+    ]
+    for path in paths:
+        content = path.read_text(encoding="utf-8")
+        assert not any(
+            provider in content.lower() for provider in FORBIDDEN_PROVIDER_NAMES
+        ), path
 
 
 def test_graphrag_embedding_configs_use_dashscope_compatible_1024_dimensions():

@@ -1,114 +1,74 @@
 # LangGraph 多智能体智能客服系统
 
-基于 LangGraph 的多智能体智能客服系统，一个面向全行业的高效、智能、可控的下一代客服解决方案。项目基于 FastAPI 和 Vue 3 构建，支持多种大语言模型，如 DeepSeek V3、Qwen2.5 系列、Llama3 系列等。涵盖了 Agent、RAG 在智能客服领域的主流应用落地需求场景。
+基于 FastAPI、Vue 3 与 LangGraph 的智能客服系统。项目的模型能力统一由 DashScope 提供，包括通用对话、思考模式、图像理解和检索向量；不支持切换到其他模型提供商。
 
-## 功能特性
+## 模型映射
 
-### 1. 通用问答能力
-- **支持 DeepSeek V3 在线API**
-- **支持 使用 Ollama 接入任意对话模型，如Qwen2.5系列，Llama3系列**
-- **灵活的模型配置**
-
-### 2. 深度思考能力
-- **支持 DeepSeek R1 在线API**
-- **支持 使用 Ollama 接入任意 Deepseek r1 模型系列**
-- **灵活的模型配置**
-
-### 3. Ollama 性能测试工具
-- 单请求性能测试
-- 并发性能测试
-- 系统资源监控
-- 自动化测试报告
+| 用途 | 默认模型 | 环境变量 |
+| --- | --- | --- |
+| 通用问答与工具调用 | `qwen3.7-plus` | `DASHSCOPE_CHAT_MODEL` |
+| 思考模式 | `qwen3.7-plus` | `DASHSCOPE_REASON_MODEL` |
+| 图像理解 | `qwen3-vl-plus` | `DASHSCOPE_VISION_MODEL` |
+| 文档检索向量 | `qwen3.7-text-embedding` | `DASHSCOPE_EMBEDDING_MODEL` |
 
 ## 快速启动
 
-### 1. 安装依赖
+1. 创建并激活虚拟环境，然后在后端目录安装依赖：
 
 ```bash
-# 创建虚拟环境
 python -m venv .venv
-
-# 激活虚拟环境
-# Windows
-.venv\Scripts\activate
-# Linux/Mac
-source .venv/bin/activate
-
-# 安装依赖
+.venv\Scripts\activate  # Windows
 pip install -r requirements.txt
 ```
 
-### 2. 配置环境变量
-
-复制 `deepseek_agent/.env.example` 文件到 `deepseek_agent/llm_backend/.env` 文件中，并根据实际情况修改配置：
+2. 将后端项目中的 `.env.example` 复制为 `.env`。不要把真实密钥提交到仓库。以下是模型相关的最小配置：
 
 ```env
-# LLM 服务配置
-CHAT_SERVICE=OLLAMA  # 或 DEEPSEEK
-REASON_SERVICE=OLLAMA  # 或 DEEPSEEK
-
-# Ollama 配置
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_CHAT_MODEL=deepseek-coder:6.7b
-OLLAMA_REASON_MODEL=deepseek-coder:6.7b
-
-# DeepSeek 配置（如果使用）
-DEEPSEEK_API_KEY=your-api-key
-DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
-DEEPSEEK_MODEL=deepseek-chat
+DASHSCOPE_API_KEY=your-dashscope-api-key
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/api/v1
+DASHSCOPE_COMPATIBLE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DASHSCOPE_CHAT_MODEL=qwen3.7-plus
+DASHSCOPE_REASON_MODEL=qwen3.7-plus
+DASHSCOPE_VISION_MODEL=qwen3-vl-plus
+DASHSCOPE_EMBEDDING_MODEL=qwen3.7-text-embedding
 ```
 
-### 3. 安装 MySQL 数据库并在 `.env` 文件中配置数据库连接信息
+`.env.example` 还包含 MySQL、Redis、Neo4j 与 SerpAPI 的本地连接占位配置；启动前请按部署环境补齐这些必填项。
 
-### 4. 启动服务
+3. 进入后端目录并启动：
 
 ```bash
-# 进入后端目录
-cd deepseek_agent/llm_backend
-
-# 启动服务（默认端口 9000）
+cd <后端目录>/llm_backend
 python run.py
-
-# 如果需要修改 IP 和端口，编辑 run.py 中的配置：
-uvicorn.run(
-    "main:app",
-    host="0.0.0.0",  # 修改监听地址
-    port=8000,       # 修改端口号
-    access_log=False,
-    log_level="error",
-    reload=True
-)
 ```
 
-服务启动后可以访问：
-- API 文档：http://localhost:8000/docs
-- 前端界面：http://localhost:8000
+默认服务地址为 `http://localhost:8000`，API 文档为 `http://localhost:8000/docs`。
+
+## 流式接口
+
+`POST /api/chat` 与 `POST /api/reason` 返回 `text/event-stream`。每个事件使用 `event: <类型>` 与 JSON `data` 负载：
+
+- `content`：回答正文增量。
+- `reasoning`：仅思考模式可能出现的推理增量。
+- `done`：流正常结束。
+- `error`：上游认证、限流、超时或服务错误的安全提示，不泄露上游响应内容。
+
+`/api/reason` 会同时产生 `reasoning` 和 `content`；普通聊天通常只产生 `content`、`done` 或 `error`。客户端应按事件类型累积内容，而不是假设每个事件都包含正文。
+
+## RAG 行为
+
+`POST /chat-rag` 需要已配置且可用的检索适配器。若部署尚未接入检索适配器、没有可用上下文或检索失败，接口会以 SSE `error` 事件返回安全错误，而不会编造检索答案。
 
 ## 技术栈
 
-- 后端：
-  - FastAPI
-  - SQLAlchemy
-  - MySQL
-  - Ollama/DeepSeek
-  - LangGraph / GraphRAG
+- 后端：FastAPI、SQLAlchemy、MySQL、Redis、Neo4j、LangGraph / GraphRAG、DashScope
+- 前端：Vue 3、Element Plus、TypeScript
 
-- 前端：
-  - Vue 3
-  - Element Plus
-  - TypeScript
+## 部署注意事项
 
-## 注意事项
-
-1. 生产环境部署时：
-   - 修改 `.env` 中的 `SECRET_KEY`
-   - 配置正确的 CORS 设置
-   - 使用 HTTPS
-   - 关闭 `reload=True`
-
-2. 开发环境：
-   - 可以启用 `reload=True` 实现热重载
-   - 可以设置 `log_level="debug"` 查看更多日志
+- 在生产环境设置强随机 `SECRET_KEY`、明确的 CORS 来源与 HTTPS。
+- 生产环境关闭 `reload=True`。
+- 将 `.env` 保持在版本控制之外，并使用安全的密钥管理方式注入 `DASHSCOPE_API_KEY`。
 
 ## License
 
