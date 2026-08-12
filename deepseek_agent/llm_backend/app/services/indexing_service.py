@@ -65,13 +65,13 @@ class IndexingService:
     
     async def process_file(self, file_info: Dict[str, Any]) -> Dict[str, Any]:
         """处理单个文件的索引构建"""
+        file_path = file_info.get('path', '')
         try:
             import graphrag.api as api
             from graphrag.config.enums import IndexingMethod
             from graphrag.config.load_config import load_config
             from graphrag.logger.rich_progress import RichProgressLogger
 
-            file_path = file_info['path']
             file_type = self._get_file_type(file_path)
             user_id = file_info.get('user_id', 0)  # 获取用户ID，默认为0
             
