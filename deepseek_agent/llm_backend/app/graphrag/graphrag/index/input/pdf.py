@@ -25,6 +25,19 @@ from graphrag.storage.pipeline_storage import PipelineStorage
 log = logging.getLogger(__name__)
 
 
+def _resolve_table_description_llm_config(config):
+    """Resolve the DashScope-compatible settings for PDF table descriptions."""
+    api_key = os.getenv("DASHSCOPE_API_KEY")
+    base_url = getattr(config, "base_url", None) or os.getenv(
+        "DASHSCOPE_COMPATIBLE_BASE_URL",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+    model = getattr(config, "table_description_model", None) or os.getenv(
+        "DASHSCOPE_CHAT_MODEL", "qwen3.7-plus"
+    )
+    return api_key, base_url, model
+
+
 def to_b64(file_path):
     """将文件转换为base64编码：二进制数据（如 PDF 文件）不能直接传输。Base64 编码将二进制数据转换为 ASCII 字符串，使其可以安全地嵌入到 JSON 中。
     """
@@ -282,7 +295,7 @@ async def load_pdf(
                     
        
                 # 为表格生成描述
-                if structured_info and structured_info.get("tables") and config.table_description_api_key and config.table_description_model:
+                if structured_info and structured_info.get("tables") and os.getenv("DASHSCOPE_API_KEY"):
                     structured_info = generate_descriptions_for_tables(auto_dir if auto_dir.exists() else doc_local_dir, structured_info, config)
                     
                 # 从content_list.json提取图片信息 - 更新路径
@@ -786,9 +799,7 @@ def generate_descriptions_for_tables(doc_local_dir, structured_info, config):
             from openai import OpenAI
             
             # 获取API密钥和配置
-            api_key = config.table_description_api_key
-            base_url = config.base_url if hasattr(config, "base_url") else "https://api.deepseek.com"
-            model = config.table_description_model
+            api_key, base_url, model = _resolve_table_description_llm_config(config)
             
             # 设置模型和参数
             max_retries = 3
@@ -962,4 +973,4 @@ def enhance_markdown_with_metadata(text, structured_info, image_info):
         enhanced_lines = result
     
     # 重新组合文本
-    return '\n'.join(enhanced_lines) 
+    return '\n'.join(enhanced_lines)

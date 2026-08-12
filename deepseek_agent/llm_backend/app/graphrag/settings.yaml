@@ -7,14 +7,14 @@
 models:
   default_chat_model:
     type: openai_chat # or azure_openai_chat
-    api_base: https://api.deepseek.com
+    api_base: ${DASHSCOPE_COMPATIBLE_BASE_URL}
     # api_base: http://192.168.110.131:11434/v1
     # api_version: 2024-05-01-preview
     auth_type: api_key # or azure_managed_identity
-    api_key: 
+    api_key: ${DASHSCOPE_API_KEY}
     # audience: "https://cognitiveservices.azure.com/.default"
     # organization: <organization_id>
-    model: deepseek-chat
+    model: ${DASHSCOPE_CHAT_MODEL}
     # model: qwen2.5:1.5b
     # deployment_name: <azure_model_deployment_name>
     encoding_model: cl100k_base # automatically set by tiktoken if left undefined
@@ -27,15 +27,16 @@ models:
     requests_per_minute: 0            # set to 0 to disable rate limiting
   default_embedding_model:
     type: openai_embedding # or azure_openai_embedding
-    api_base: https://ai.devtool.tech/proxy/v1
+    api_base: ${DASHSCOPE_COMPATIBLE_BASE_URL}
     # api_base: http://192.168.110.131:11434/v1
     # api_version: 2024-05-01-preview
     auth_type: api_key # or azure_managed_identity
-    api_key: your-embedding-api-key
+    api_key: ${DASHSCOPE_API_KEY}
     # api_key: qwen
     # audience: "https://cognitiveservices.azure.com/.default"
     # organization: <organization_id>
-    model: text-embedding-3-small
+    model: ${DASHSCOPE_EMBEDDING_MODEL}
+    dimensions: 1024
     # model: bge-m3
     # deployment_name: <azure_model_deployment_name>
     encoding_model: cl100k_base # automatically set by tiktoken if left undefined
@@ -84,9 +85,9 @@ embed_text:
 #   local_output_dir: "./data/pdf_outputs"  # 自定义参数：添加PDF输出目录配置
 #   mineru_api_url: "http://192.168.110.131:8000/"
 #   mineru_output_dir: "/home/07_minerU/tmp/"
-#   table_description_api_key: ""
-#   table_description_model: "deepseek-chat"
-#   base_url: "https://api.deepseek.com"
+#   table_description_api_key: ${DASHSCOPE_API_KEY}
+#   table_description_model: ${DASHSCOPE_CHAT_MODEL}
+#   base_url: ${DASHSCOPE_COMPATIBLE_BASE_URL}
 
 #   image_description_api_key: ""
 #   image_description_model: "gpt-4o"
