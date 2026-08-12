@@ -1,11 +1,15 @@
 """DashScope 多模态聊天接口的流式 SSE 适配器。"""
 
 import asyncio
+import base64
 import inspect
 import json
 import logging
+import mimetypes
 import threading
 from collections.abc import AsyncGenerator, Callable, Mapping
+from io import BytesIO
+from pathlib import Path
 from typing import Any, Optional
 
 from app.core.config import settings
@@ -125,6 +129,71 @@ class DashScopeService:
             return choices[0]
         except Exception as error:
             raise self._as_service_error(error) from None
+
+    async def describe_image(self, image_path: str | Path) -> str:
+        """使用 DashScope 多模态 SDK 描述本地图片。"""
+        try:
+            image_url = await asyncio.to_thread(
+                self._create_image_data_url, Path(image_path)
+            )
+            response = await self._call_once(
+                {
+                    "api_key": settings.DASHSCOPE_API_KEY,
+                    "model": settings.DASHSCOPE_VISION_MODEL,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": [
+                                {
+                                    "text": "你是专业的图像分析助手，请关注产品细节、品牌和型号。"
+                                }
+                            ],
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {"image": image_url},
+                                {"text": "请详细描述这张图片中的商品。"},
+                            ],
+                        },
+                    ],
+                    "result_format": "message",
+                    "stream": False,
+                    "enable_thinking": False,
+                }
+            )
+            self._raise_for_error_chunk(response)
+            message = self._get_message(response)
+            description = self._extract_text(
+                self._get_field(message, "content") if message else None
+            )
+            if not description:
+                raise DashScopeServiceError("upstream")
+            return description
+        except Exception as error:
+            raise self._as_service_error(error) from None
+
+    @staticmethod
+    def _create_image_data_url(image_path: Path) -> str:
+        """将本地图片缩放并编码为 DashScope 可接受的 data URL。"""
+        if not image_path.is_file():
+            raise FileNotFoundError(image_path)
+
+        try:
+            from PIL import Image
+
+            with Image.open(image_path) as image:
+                image.thumbnail((1024, 1024))
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                buffer = BytesIO()
+                image.save(buffer, format="JPEG", quality=85)
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            return f"data:image/jpeg;base64,{encoded}"
+        except ImportError:
+            mime_type = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
+            encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+            return f"data:{mime_type};base64,{encoded}"
 
     async def generate_search_summary_stream(
         self,

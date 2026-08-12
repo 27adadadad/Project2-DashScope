@@ -4,17 +4,9 @@ import os
 from pathlib import Path
 from pydantic import BaseModel, Field
 
-# 导入GraphRAG相关模块
-import app.graphrag.graphrag.api as api
-from app.graphrag.graphrag.config.load_config import load_config
-from app.graphrag.graphrag.callbacks.noop_query_callbacks import NoopQueryCallbacks
-from app.graphrag.graphrag.utils.storage import load_table_from_storage
-from app.graphrag.graphrag.storage.file_pipeline_storage import FilePipelineStorage
 from app.lg_agent.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
 from app.core.logger import get_logger
-from langchain_ollama import ChatOllama
-from langchain_deepseek import ChatDeepSeek
-from app.core.config import settings, ServiceType
+from app.services.dashscope_langchain import create_agent_model
 from app.lg_agent.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever import NorthwindCypherRetriever
 from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.cypher_tools.utils import create_text2cypher_generation_node, create_text2cypher_validation_node, create_text2cypher_execution_node
 
@@ -65,12 +57,7 @@ def create_cypher_query_node(
         if not query:
             errors.append("未提供查询文本")
  
-        # 使用大模型执行查询/多跳/并行查询计划
-        # 1. 根据.env文件中AGENT_SERVICE的设置，选择使用DeepSeek或Ollama启动的模型服务
-        if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
-            model = ChatDeepSeek(api_key=settings.DEEPSEEK_API_KEY, model_name=settings.DEEPSEEK_MODEL, temperature=0.7, tags=["research_plan"])
-        else:
-            model = ChatOllama(model=settings.OLLAMA_AGENT_MODEL, base_url=settings.OLLAMA_BASE_URL, temperature=0.7, tags=["research_plan"])
+        model = create_agent_model(["research_plan"])
 
         # 2. 获取Neo4j图数据库连接
         try:
@@ -109,8 +96,7 @@ def create_cypher_query_node(
             auth=(NEO4J_USERNAME, NEO4J_PASSWORD)
             )
 
-        # 这里可以填写 DeepSeek 模型
-        client = OpenAILLM(api_key="", base_url="https://api.deepseek.com", model_name='deepseek-chat')
+        client = OpenAILLM(api_key="", base_url="https://example.invalid", model_name="qwen")
 
         
         # 定义用户输入：

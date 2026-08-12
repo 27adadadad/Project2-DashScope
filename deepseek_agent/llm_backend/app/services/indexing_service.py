@@ -7,12 +7,6 @@ import mimetypes
 import shutil
 import uuid
 
-import graphrag.api as api
-from graphrag.config.load_config import load_config
-from graphrag.config.enums import IndexingMethod
-from graphrag.logger.rich_progress import RichProgressLogger
-from graphrag.index.typing.pipeline_run_result import PipelineRunResult
-
 from app.core.config import settings
 from app.core.logger import get_logger
 
@@ -72,6 +66,11 @@ class IndexingService:
     async def process_file(self, file_info: Dict[str, Any]) -> Dict[str, Any]:
         """处理单个文件的索引构建"""
         try:
+            import graphrag.api as api
+            from graphrag.config.enums import IndexingMethod
+            from graphrag.config.load_config import load_config
+            from graphrag.logger.rich_progress import RichProgressLogger
+
             file_path = file_info['path']
             file_type = self._get_file_type(file_path)
             user_id = file_info.get('user_id', 0)  # 获取用户ID，默认为0

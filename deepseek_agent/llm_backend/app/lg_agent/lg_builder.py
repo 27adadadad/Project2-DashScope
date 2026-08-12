@@ -1,4 +1,3 @@
-from app.lg_agent.lg_states import AgentState, Router
 from app.lg_agent.lg_prompts import (
     ROUTER_SYSTEM_PROMPT,
     GET_ADDITIONAL_SYSTEM_PROMPT,
@@ -10,18 +9,12 @@ from app.lg_agent.lg_prompts import (
     GENERATE_QUERIES_SYSTEM_PROMPT
 )
 from langchain_core.runnables import RunnableConfig
-from langchain_deepseek import ChatDeepSeek
-from langchain_ollama import ChatOllama
-from app.core.config import settings, ServiceType
 from app.core.logger import get_logger
 from typing import cast, Literal, TypedDict, List, Dict, Any
 from langchain_core.messages import BaseMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from app.lg_agent.lg_states import AgentState, InputState, Router, GradeHallucinations
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever import NorthwindCypherRetriever
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.planner.node import create_planner_node
-from app.lg_agent.kg_sub_graph.agentic_rag_agents.workflows.multi_agent.multi_tool import create_multi_tool_workflow
 from app.lg_agent.kg_sub_graph.kg_neo4j_conn import get_neo4j_graph
 from pydantic import BaseModel
 from typing import Dict, List
@@ -29,13 +22,9 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables.base import Runnable
 from app.lg_agent.kg_sub_graph.agentic_rag_agents.components.utils.utils import retrieve_and_parse_schema_from_graph_for_prompts
 from langchain_core.prompts import ChatPromptTemplate
-import base64
-import os
-import aiohttp
-import asyncio
-import json
-import time
 from pathlib import Path
+from app.services.dashscope_langchain import create_agent_model
+from app.services.dashscope_service import DashScopeService
 
 
 from typing import Literal
@@ -69,13 +58,7 @@ async def analyze_and_route_query(
     Returns:
         dict[str, Router]: A dictionary containing the 'router' key with the classification result (classification type and logic).
     """
-    # 选择模型实例，通过.env文件中的AGENT_SERVICE参数选择
-    if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
-        model = ChatDeepSeek(api_key=settings.DEEPSEEK_API_KEY, model_name=settings.DEEPSEEK_MODEL, temperature=0.7, tags=["router"])
-        logger.info(f"Using DeepSeek model: {settings.DEEPSEEK_MODEL}")
-    else:
-        model = ChatOllama(model=settings.OLLAMA_AGENT_MODEL, base_url=settings.OLLAMA_BASE_URL, temperature=0.7, tags=["router"])
-        logger.info(f"Using Ollama model: {settings.OLLAMA_AGENT_MODEL}")
+    model = create_agent_model(["router"])
 
     # 拼接提示模版 + 用户的实时问题（包含历史上下文对话） 
     messages = [
@@ -138,11 +121,7 @@ async def respond_to_general_query(
     """
     logger.info("-----generate general-query response-----")
     
-    # 使用大模型生成回复
-    if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
-        model = ChatDeepSeek(api_key=settings.DEEPSEEK_API_KEY, model_name=settings.DEEPSEEK_MODEL, temperature=0.7, tags=["general_query"])
-    else:
-        model = ChatOllama(model=settings.OLLAMA_AGENT_MODEL, base_url=settings.OLLAMA_BASE_URL, temperature=0.7, tags=["general_query"])
+    model = create_agent_model(["general_query"])
     
     system_prompt = GENERAL_QUERY_SYSTEM_PROMPT.format(
         logic=state.router["logic"]
@@ -168,11 +147,7 @@ async def get_additional_info(
     """
     logger.info("------continue to get additional info------")
     
-    # 使用大模型生成回复
-    if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
-        model = ChatDeepSeek(api_key=settings.DEEPSEEK_API_KEY, model_name=settings.DEEPSEEK_MODEL, temperature=0.7, tags=["additional_info"])
-    else:
-        model = ChatOllama(model=settings.OLLAMA_AGENT_MODEL, base_url=settings.OLLAMA_BASE_URL, temperature=0.7, tags=["additional_info"])
+    model = create_agent_model(["additional_info"])
 
     # 如果用户的问题是电商相关，但与自己的业务无关，则需要返回"无关问题"
 
@@ -247,135 +222,26 @@ async def get_additional_info(
 async def create_image_query(
     state: AgentState, *, config: RunnableConfig
 ) -> Dict[str, List[BaseMessage]]:
-    """处理图片查询并生成描述回复
-    
-    Args:
-        state (AgentState): 当前代理状态，包括对话历史
-        config (RunnableConfig): 配置参数，包含线程ID等配置信息
-        
-    Returns:
-        Dict[str, List[BaseMessage]]: 包含'messages'键的字典，其中包含生成的响应
-    """
-    logger.info("-----Found User Upload Image-----")    
+    """通过 DashScope 视觉服务描述用户图片后生成客服回复。"""
+    logger.info("-----Found User Upload Image-----")
     image_path = config.get("configurable", {}).get("image_path", None)
 
     if not image_path or not Path(image_path).exists():
         logger.warning(f"User Upload Image Not Found: {image_path}")
         return {"messages": [AIMessage(content="抱歉，我无法查看这张图片，请重新上传。")]}
-    
-    # 获取视觉模型配置
-    api_key = settings.VISION_API_KEY
-    base_url = settings.VISION_BASE_URL
-    vision_model = settings.VISION_MODEL
-    
-    if not api_key or not base_url or not vision_model:
-        logger.error("Vision Model Configuration Not Complete")
-        return {"messages": [AIMessage(content="抱歉，我无法查看这张图片，请重新上传。")]}
-    
-    logger.info(f"Using Vision Model: {vision_model} to process image: {image_path}")
-    
+
     try:
-        # 导入图片处理库
-        from PIL import Image
-        import io
-        
-        # 读取并压缩图片
-        with Image.open(image_path) as img:
-            # 设置最大尺寸
-            max_size = 1024
-            # 计算缩放比例
-            width, height = img.size
-            ratio = min(max_size / width, max_size / height)
-            
-            # 如果图片尺寸已经小于最大尺寸，不需要缩放
-            if width <= max_size and height <= max_size:
-                resized_img = img
-            else:
-                new_width = int(width * ratio)
-                new_height = int(height * ratio)
-                resized_img = img.resize((new_width, new_height), Image.LANCZOS)
-            
-            # 转换为JPEG格式，并调整质量
-            img_byte_arr = io.BytesIO()
-            if resized_img.mode != 'RGB':
-                resized_img = resized_img.convert('RGB')
-            resized_img.save(img_byte_arr, format='JPEG', quality=85)
-            img_byte_arr.seek(0)
-            
-            # 转换为base64
-            image_data = base64.b64encode(img_byte_arr.read()).decode('utf-8')
-            
-            logger.info(f"Image Compressed, Original Size: {width}x{height}, New Size: {resized_img.width}x{resized_img.height}")
-        
-        # 构建API请求
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        }
-        
-        payload = {
-            "model": vision_model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "你是一个专业的图像分析助手。请详细分析图片中的内容，特别关注产品细节、品牌、型号等信息。"
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_data}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            "max_tokens": 4000,
-            "temperature": 0.7
-        }
-        
-        # 发送API请求
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=60  # 增加超时时间
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    image_description = result["choices"][0]["message"]["content"]
-                    logger.info(f"Successfully processed image and generated description")
-                    # 使用图片描述和用户问题生成最终回复
-                    # 从lg_prompts导入电商客服模板
-                    
-                    # 构建回复请求
-                    if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
-                        model = ChatDeepSeek(api_key=settings.DEEPSEEK_API_KEY, model_name=settings.DEEPSEEK_MODEL, temperature=0.7, tags=["image_query"])
-                    else:
-                        model = ChatOllama(model=settings.OLLAMA_AGENT_MODEL, base_url=settings.OLLAMA_BASE_URL, temperature=0.7, tags=["image_query"])
-                    # 使用专门的图片查询提示模板
-                    system_prompt = GET_IMAGE_SYSTEM_PROMPT.format(
-                        image_description=image_description
-                    )
-                    messages = [{"role": "system", "content": system_prompt}] + state.messages
-                    response = await model.ainvoke(messages)
-                    return {"messages": [response]}    
-        
-                else:
-                    error_text = await response.text()
-                    logger.error(f"Vision API Request Failed: {response.status} - {error_text}")
-                    return {"messages": [AIMessage(content=f"抱歉，我无法查看这张图片，请重新上传。")]}
-
-
-
-
-
-    except Exception as e:
-        logger.error(f"Error processing image: {str(e)}")
-        return {"messages": [AIMessage(content=f"抱歉，我无法查看这张图片，请重新上传。")]}
+        image_description = await DashScopeService().describe_image(image_path)
+        model = create_agent_model(["image_query"])
+        system_prompt = GET_IMAGE_SYSTEM_PROMPT.format(
+            image_description=image_description
+        )
+        messages = [{"role": "system", "content": system_prompt}] + state.messages
+        response = await model.ainvoke(messages)
+        return {"messages": [response]}
+    except Exception as error:
+        logger.error(f"Error processing image: {error}")
+        return {"messages": [AIMessage(content="抱歉，我无法查看这张图片，请重新上传。")]}
 
 async def create_file_query(
     state: AgentState, *, config: RunnableConfig
@@ -398,11 +264,9 @@ async def create_research_plan(
     """
     logger.info("------execute local knowledge base query------")
 
-    # 使用大模型生成查询/多跳、并行查询计划
-    if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
-        model = ChatDeepSeek(api_key=settings.DEEPSEEK_API_KEY, model_name=settings.DEEPSEEK_MODEL, temperature=0.7, tags=["research_plan"])
-    else:
-        model = ChatOllama(model=settings.OLLAMA_AGENT_MODEL, base_url=settings.OLLAMA_BASE_URL, temperature=0.7, tags=["research_plan"])
+    model = create_agent_model(["research_plan"])
+    from app.lg_agent.kg_sub_graph.agentic_rag_agents.retrievers.cypher_examples.northwind_retriever import NorthwindCypherRetriever
+    from app.lg_agent.kg_sub_graph.agentic_rag_agents.workflows.multi_agent.multi_tool import create_multi_tool_workflow
     
     # 初始化必要参数
     # 1. Neo4j图数据库连接 - 使用配置中的连接信息
@@ -474,10 +338,7 @@ async def check_hallucinations(
     Returns:
         dict[str, Router]: A dictionary containing the 'router' key with the classification result (classification type and logic).
     """
-    if settings.AGENT_SERVICE == ServiceType.DEEPSEEK:
-        model = ChatDeepSeek(api_key=settings.DEEPSEEK_API_KEY, model_name=settings.DEEPSEEK_MODEL, temperature=0.7, tags=["hallucinations"])
-    else:
-        model = ChatOllama(model=settings.OLLAMA_AGENT_MODEL, base_url=settings.OLLAMA_BASE_URL, temperature=0.7, tags=["hallucinations"])
+    model = create_agent_model(["hallucinations"])
     
     system_prompt = CHECK_HALLUCINATIONS.format(
         documents=state.documents,
