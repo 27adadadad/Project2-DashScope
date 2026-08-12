@@ -21,6 +21,7 @@ class IndexingService:
 
         # 默认配置文件
         self.default_config = 'settings.yaml'
+        self.config_mapping = {}
         
     def _get_file_type(self, file_path: str) -> str:
         """获取文件MIME类型"""

@@ -22,6 +22,7 @@ from app.services.conversation_service import ConversationService
 import uuid
 import os
 from app.services.indexing_service import IndexingService
+from app.services.rag_chat_service import RAGChatService
 import sys
 from app.lg_agent.lg_states import AgentState, InputState
 from app.lg_agent.utils import new_uuid

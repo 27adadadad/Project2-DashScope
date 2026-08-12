@@ -25,14 +25,15 @@ models:
     requests_per_minute: 0            # set to 0 to disable rate limiting
   default_embedding_model:
     type: openai_embedding # or azure_openai_embedding
-    api_base: ${Embedding_API_BASE}
+    api_base: ${DASHSCOPE_COMPATIBLE_BASE_URL}
     # api_base: http://192.168.110.131:11434/v1
     # api_version: 2024-05-01-preview
     auth_type: api_key # or azure_managed_identity
-    api_key: ${Embedding_API_KEY}
+    api_key: ${DASHSCOPE_API_KEY}
 
     # organization: <organization_id>
-    model: ${Embedding_MODEL_NAME}
+    model: ${DASHSCOPE_EMBEDDING_MODEL}
+    dimensions: 1024
     # deployment_name: <azure_model_deployment_name>
     encoding_model: cl100k_base # automatically set by tiktoken if left undefined
     model_supports_json: true # recommended if this is available for your model.
@@ -66,9 +67,9 @@ input:
   local_output_dir: "./data/pdf_outputs"  # 自定义参数：添加PDF输出目录配置
   mineru_api_url: "http://192.168.110.131:8000/"
   mineru_output_dir: "/home/07_minerU/tmp/"
-  table_description_api_key: ""
-  table_description_model: "deepseek-chat"
-  base_url: "https://api.deepseek.com"
+  table_description_api_key: ${DASHSCOPE_API_KEY}
+  table_description_model: ${DASHSCOPE_CHAT_MODEL}
+  base_url: ${DASHSCOPE_COMPATIBLE_BASE_URL}
 
   image_description_api_key: ""
   image_description_model: "gpt-4o"

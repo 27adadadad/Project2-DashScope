@@ -1,11 +1,10 @@
 """基于词向量的查询匹配工具，用于将用户问题匹配到预定义的Cypher查询"""
 
-import os
+import asyncio
 import numpy as np
-import requests
 from typing import Dict, List, Tuple, Any, Optional
 from sklearn.metrics.pairwise import cosine_similarity
-from app.core.config import settings
+from app.services.dashscope_embeddings import DashScopeEmbeddings
 
 class VectorQueryMatcher:
     """基于词向量的查询匹配器，用于将用户问题匹配到预定义的Cypher查询"""
@@ -28,28 +27,15 @@ class VectorQueryMatcher:
         self.query_descriptions = query_descriptions
         self.similarity_threshold = similarity_threshold
         
-        # 使用环境变量获取Ollama的基础URL和模型名称
-        self.ollama_base_url = settings.OLLAMA_BASE_URL.rstrip('/')
-        self.ollama_embedding_model = settings.OLLAMA_EMBEDDING_MODEL
-        self.ollama_api_url = f"{self.ollama_base_url}/api/embed"
-        
-        print(f"使用Ollama模型: {self.ollama_embedding_model}, 地址: {self.ollama_base_url}")
+        self.embeddings = DashScopeEmbeddings()
         
         # 预计算查询向量
         self.query_vectors = self._compute_query_vectors()
     
     def _embed_texts(self, texts: List[str]) -> List[List[float]]:
-        """使用Ollama的embedding API将文本转换为向量"""
-        payload = {
-            "model": self.ollama_embedding_model,
-            "input": texts
-        }
-        
+        """使用 DashScope 原生向量接口将文本转换为向量。"""
         try:
-            response = requests.post(self.ollama_api_url, json=payload)
-            response.raise_for_status()
-            result = response.json()
-            return result["embeddings"]
+            return asyncio.run(self.embeddings.embed_documents(texts))
         except Exception as e:
             print(f"生成embedding时出错: {str(e)}")
             # 如果调用失败，返回空向量作为后备
@@ -232,4 +218,4 @@ def create_vector_query_matcher(
             description = query_name.replace('_', ' ')
             query_descriptions[query_name] = description
     
-    return VectorQueryMatcher(predefined_cypher_dict, query_descriptions) 
+    return VectorQueryMatcher(predefined_cypher_dict, query_descriptions)
