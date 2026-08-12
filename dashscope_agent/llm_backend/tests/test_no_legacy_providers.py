@@ -25,7 +25,6 @@ def _is_vendored_graphrag(path: Path) -> bool:
 def _has_legacy_provider_name(path: Path) -> bool:
     """忽略保留的包目录名，仅检查实际文件与其他目录名称。"""
     parts = [part.lower() for part in path.relative_to(PROJECT_ROOT).parts]
-    parts = [part for part in parts if part != "deepseek_agent"]
     return any(
         provider in part
         for provider in FORBIDDEN_PROVIDER_NAMES
@@ -73,7 +72,7 @@ def test_runtime_and_current_docs_have_no_legacy_provider_content():
         BACKEND_ROOT.parent / "requirements.txt",
         BACKEND_ROOT.parent / ".env.example",
         PROJECT_ROOT / "README.md",
-        PROJECT_ROOT / "deepseek_agent" / "README.md",
+        PROJECT_ROOT / "dashscope_agent" / "README.md",
     ]
     for path in paths:
         content = path.read_text(encoding="utf-8")
@@ -95,3 +94,8 @@ def test_graphrag_embedding_configs_use_dashscope_compatible_1024_dimensions():
         assert "dimensions: 1024" in embedding_section
         assert "deepseek" not in content.lower()
         assert "ollama" not in content.lower()
+
+
+def test_top_level_agent_directory_uses_dashscope_name():
+    assert (PROJECT_ROOT / "dashscope_agent").is_dir()
+    assert not (PROJECT_ROOT / "deepseek_agent").exists()

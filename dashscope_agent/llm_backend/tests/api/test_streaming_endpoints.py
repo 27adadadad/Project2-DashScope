@@ -241,7 +241,7 @@ def test_langgraph_resume_streams_safe_error_instead_of_aborting(monkeypatch):
 
 def test_readmes_describe_the_json_type_sse_protocol():
     project_root = Path(__file__).resolve().parents[4]
-    for readme in (project_root / "README.md", project_root / "deepseek_agent" / "README.md"):
+    for readme in (project_root / "README.md", project_root / "dashscope_agent" / "README.md"):
         content = readme.read_text(encoding="utf-8")
         assert "data:" in content
         assert '"type"' in content

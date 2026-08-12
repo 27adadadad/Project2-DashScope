@@ -34,7 +34,7 @@ from graphrag.index.typing.pipeline_run_result import PipelineRunResult
 # ========================================
 
 # GraphRAG项目根目录路径
-PROJECT_DIR = "C:\\Users\\Lenovo\\Desktop\\folder\\Agent\\code\\code\\backend\\deepseek_agent\\llm_backend\\app\\graphrag"
+PROJECT_DIR = "C:\\Users\\Lenovo\\Desktop\\folder\\Agent\\code\\code\\backend\\dashscope_agent\\llm_backend\\app\\graphrag"
 
 # 数据目录名称（相对于项目根目录）
 DATA_DIR_NAME = "data"
@@ -47,7 +47,7 @@ IS_UPDATE = True
 # 是否进行内存分析
 MEMORY_PROFILE = False
 
-# 配置文件路径（为None则使用默认配置, 如果是增量更新，则需要指定配置文件，比如："C:\\Users\\Lenovo\\Desktop\\folder\\Agent\\code\\code\\backend\\deepseek_agent\\llm_backend\\app\\graphrag\\data\\settings_csv.yaml"）
+# 配置文件路径（为None则使用默认配置, 如果是增量更新，则需要指定配置文件，比如："C:\\Users\\Lenovo\\Desktop\\folder\\Agent\\code\\code\\backend\\dashscope_agent\\llm_backend\\app\\graphrag\\data\\settings_csv.yaml"）
 CONFIG_FILE = None
 
 # 输出目录（为None则使用配置中的默认输出目录，）

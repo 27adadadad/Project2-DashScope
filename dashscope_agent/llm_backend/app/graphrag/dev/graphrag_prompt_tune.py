@@ -31,7 +31,7 @@ from graphrag.prompt_tune.types import DocSelectionType
 # ========================================
 
 # GraphRAG项目根目录路径
-PROJECT_DIR = "C:\\Users\\Lenovo\\Desktop\\folder\\Agent\\code\\code\\backend\\deepseek_agent\\llm_backend\\app\\graphrag"
+PROJECT_DIR = "C:\\Users\\Lenovo\\Desktop\\folder\\Agent\\code\\code\\backend\\dashscope_agent\\llm_backend\\app\\graphrag"
 
 # 数据目录名称（相对于项目根目录）
 DATA_DIR_NAME = "data"
@@ -72,7 +72,7 @@ N_SUBSET_MAX = 300
 K = 15
 
 # 输出目录
-OUTPUT_DIR = "C:\\Users\\Lenovo\\Desktop\\folder\\Agent\\code\\code\\backend\\deepseek_agent\\llm_backend\\app\\graphrag\\data\\pdf_prompt_turn_output"
+OUTPUT_DIR = "C:\\Users\\Lenovo\\Desktop\\folder\\Agent\\code\\code\\backend\\dashscope_agent\\llm_backend\\app\\graphrag\\data\\pdf_prompt_turn_output"
 
 # 全局日志记录器
 logger = None
@@ -259,4 +259,4 @@ def main():
         exit(1)
     
 if __name__ == "__main__":
-    main() 
+    main()

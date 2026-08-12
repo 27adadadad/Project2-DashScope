@@ -35,7 +35,7 @@ from graphrag.storage.file_pipeline_storage import FilePipelineStorage
 # ========================================
 
 # GraphRAG项目根目录路径
-PROJECT_DIR = "C:\\Users\\Lenovo\\Desktop\\folder\\Agent\\code\\code\\backend\\deepseek_agent\\llm_backend\\app\\graphrag"
+PROJECT_DIR = "C:\\Users\\Lenovo\\Desktop\\folder\\Agent\\code\\code\\backend\\dashscope_agent\\llm_backend\\app\\graphrag"
 
 # 数据目录名称（相对于项目根目录）
 DATA_DIR_NAME = "data"
