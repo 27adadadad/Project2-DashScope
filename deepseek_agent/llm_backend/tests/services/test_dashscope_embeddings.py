@@ -71,3 +71,31 @@ def test_embed_documents_uses_native_text_embedding_document_mode(monkeypatch):
     assert embeddings == [[0.1, 0.2]]
     assert client.calls[0]["input"] == ["文档一", "文档二"]
     assert client.calls[0]["text_type"] == "document"
+
+
+def test_sync_embedder_adapts_dashscope_for_neo4j_retrievers(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    monkeypatch.setenv("SERPAPI_KEY", "test-serpapi-key")
+    monkeypatch.setenv("DB_HOST", "localhost")
+    monkeypatch.setenv("DB_PORT", "3306")
+    monkeypatch.setenv("DB_USER", "test-user")
+    monkeypatch.setenv("DB_PASSWORD", "test-password")
+    monkeypatch.setenv("DB_NAME", "test-db")
+    monkeypatch.setenv("REDIS_HOST", "localhost")
+    monkeypatch.setenv("REDIS_PORT", "6379")
+    sys.modules.pop("app.core.config", None)
+    sys.modules.pop("app.services.dashscope_embeddings", None)
+    from app.services.dashscope_embeddings import DashScopeSyncEmbeddings
+
+    client = FakeTextEmbedding()
+    embedding = DashScopeSyncEmbeddings(client=client).embed_query("客户问题")
+
+    assert embedding == [0.1, 0.2]
+    assert client.calls == [
+        {
+            "model": "qwen3.7-text-embedding",
+            "input": "客户问题",
+            "text_type": "query",
+            "dimension": 1024,
+        }
+    ]

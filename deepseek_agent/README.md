@@ -34,14 +34,14 @@ python run.py
 
 ## SSE 协议
 
-`POST /api/chat` 和 `POST /api/reason` 均返回 `text/event-stream`。事件类别为：
+`POST /api/chat`、`POST /api/reason` 与 LangGraph 流式接口均返回 `text/event-stream`。每条 SSE 只使用 `data:` 行，负载为 JSON，例如 `data: {"type":"content","content":"你好"}`；事件类型由 JSON 的 `type` 字段表示：
 
 - `reasoning`：思考过程的增量，仅 `/api/reason` 可能发送；
 - `content`：回复正文增量；
 - `done`：请求正常完成；
 - `error`：认证、限流、超时或上游异常的安全错误信息。
 
-客户端应分别处理 `reasoning` 与 `content`，并在收到 `done` 后结束渲染。收到 `error` 时展示该安全错误，不应依赖或展示上游原始响应。
+`/api/langgraph/query` 和 `/api/langgraph/resume` 同样发送 `content`、`done` 与 `error`，并可能发送带 `conversation_id` 的 `interruption`。客户端应根据 `type` 分别处理 `reasoning` 与 `content`，在收到 `done` 后结束渲染；收到 `error` 时展示安全错误，不应依赖或展示上游原始响应。
 
 ## RAG 行为
 

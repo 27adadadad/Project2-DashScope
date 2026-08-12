@@ -64,3 +64,29 @@ def test_project_level_graphrag_settings_use_dashscope_environment_variables():
     assert "model: ${DASHSCOPE_CHAT_MODEL}" in settings
     assert "api.deepseek.com" not in settings
     assert "deepseek-chat" not in settings
+
+
+def test_indexing_graphrag_data_configs_use_dashscope_for_all_models():
+    data_dir = GRAPHRAG_ROOT / "data"
+    for filename in ("settings.yaml", "settings_csv.yaml", "settings_pdf.yaml"):
+        settings = (data_dir / filename).read_text(encoding="utf-8")
+        chat_section = settings.split("default_chat_model:", 1)[1].split(
+            "default_embedding_model:", 1
+        )[0]
+        embedding_section = settings.split("default_embedding_model:", 1)[1].split(
+            "vector_store:", 1
+        )[0]
+
+        for section, model_variable in (
+            (chat_section, "${DASHSCOPE_CHAT_MODEL}"),
+            (embedding_section, "${DASHSCOPE_EMBEDDING_MODEL}"),
+        ):
+            assert "${DASHSCOPE_COMPATIBLE_BASE_URL}" in section
+            assert "${DASHSCOPE_API_KEY}" in section
+            assert model_variable in section
+            assert "GRAPHRAG_API_" not in section
+
+    pdf_settings = (data_dir / "settings_pdf.yaml").read_text(encoding="utf-8")
+    assert "image_description_api_key: ${DASHSCOPE_API_KEY}" in pdf_settings
+    assert "image_description_model: ${DASHSCOPE_VISION_MODEL}" in pdf_settings
+    assert "image_description_base_url: ${DASHSCOPE_COMPATIBLE_BASE_URL}" in pdf_settings

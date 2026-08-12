@@ -7,13 +7,13 @@
 models:
   default_chat_model:
     type: openai_chat # or azure_openai_chat
-    api_base: ${GRAPHRAG_API_BASE}
+    api_base: ${DASHSCOPE_COMPATIBLE_BASE_URL}
     # api_version: 2024-05-01-preview
     auth_type: api_key # or azure_managed_identity
-    api_key: ${GRAPHRAG_API_KEY} # set this in the generated .env file
+    api_key: ${DASHSCOPE_API_KEY}
     # audience: "https://cognitiveservices.azure.com/.default"
     # organization: <organization_id>
-    model: ${GRAPHRAG_MODEL_NAME}
+    model: ${DASHSCOPE_CHAT_MODEL}
     # deployment_name: <azure_model_deployment_name>
     encoding_model: cl100k_base # automatically set by tiktoken if left undefined
     # model_supports_json: false # recommended if this is available for your model.
@@ -71,9 +71,9 @@ input:
   table_description_model: ${DASHSCOPE_CHAT_MODEL}
   base_url: ${DASHSCOPE_COMPATIBLE_BASE_URL}
 
-  image_description_api_key: ""
-  image_description_model: "gpt-4o"
-  image_description_base_url: "https://ai.devtool.tech/proxy/v1"
+  image_description_api_key: ${DASHSCOPE_API_KEY}
+  image_description_model: ${DASHSCOPE_VISION_MODEL}
+  image_description_base_url: ${DASHSCOPE_COMPATIBLE_BASE_URL}
 
 
 chunks:

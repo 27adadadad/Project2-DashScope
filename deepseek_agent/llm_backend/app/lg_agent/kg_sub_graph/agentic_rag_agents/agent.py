@@ -3,8 +3,10 @@
 import os
 
 from langchain_neo4j import Neo4jGraph
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from neo4j import GraphDatabase
+
+from app.services.dashscope_embeddings import DashScopeSyncEmbeddings
+from app.services.dashscope_langchain import create_agent_model
 
 from ps_genai_agents.retrievers.cypher_examples import (
     Neo4jVectorSearchCypherExampleRetriever,
@@ -16,8 +18,8 @@ from ps_genai_agents.workflows.multi_agent import (
 )
 
 neo4j_graph = Neo4jGraph(enhanced_schema=True)
-llm = ChatOpenAI()
-embedder = OpenAIEmbeddings(model="text-embedding-ada-002")
+llm = create_agent_model(["langgraph-studio", "agentic-rag"])
+embedder = DashScopeSyncEmbeddings()
 
 neo4j_driver = GraphDatabase.driver(
     uri=os.getenv("NEO4J_URI", ""),

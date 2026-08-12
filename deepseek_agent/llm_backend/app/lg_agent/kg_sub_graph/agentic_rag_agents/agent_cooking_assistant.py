@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 from langchain_neo4j import Neo4jGraph
-from langchain_openai import ChatOpenAI
+
+from app.services.dashscope_langchain import create_agent_model
 
 from data.bbc_recipes.queries import get_cypher_statements_dictionary, get_tool_schemas
 from ps_genai_agents.components.text2cypher import get_text2cypher_schema
@@ -11,7 +12,7 @@ load_dotenv()
 
 neo4j_graph = Neo4jGraph(enhanced_schema=True)
 
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
+llm = create_agent_model(["langgraph-studio", "cooking-assistant"])
 
 
 cypher_query_yaml_file_path = "data/bbc_recipes/queries/queries.yml"

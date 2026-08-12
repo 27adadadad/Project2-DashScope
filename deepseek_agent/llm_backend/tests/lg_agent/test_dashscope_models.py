@@ -122,3 +122,22 @@ def test_image_query_uses_fake_dashscope_service_without_network(monkeypatch, tm
 
     assert described_images == [str(image_path)]
     assert result["messages"][0].content == "这是一盏支持语音控制的智能台灯。"
+
+
+def test_langgraph_studio_entrypoints_use_dashscope_factories():
+    agent_dir = (
+        PROJECT_ROOT
+        / "app"
+        / "lg_agent"
+        / "kg_sub_graph"
+        / "agentic_rag_agents"
+    )
+    for filename in ("agent.py", "agent_cooking_assistant.py"):
+        source = (agent_dir / filename).read_text(encoding="utf-8")
+        assert "from app.services.dashscope_langchain import create_agent_model" in source
+        assert "llm = create_agent_model(" in source
+        assert "ChatOpenAI(" not in source
+        assert "OpenAIEmbeddings" not in source
+        assert "gpt-4o" not in source
+
+    assert "DashScopeSyncEmbeddings" in (agent_dir / "agent.py").read_text(encoding="utf-8")

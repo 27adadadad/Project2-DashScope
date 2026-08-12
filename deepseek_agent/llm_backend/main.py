@@ -39,6 +39,37 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 # 之后，便可以在当前文件中直接使用 logger.info()、logger.error() 等方法来记录日志，而不需要进行其他操作。
 logger = get_logger(service="main")
 
+
+def _sse_event(event_type: str, **payload: object) -> str:
+    """构造统一的 JSON SSE 负载。"""
+    return f"data: {json.dumps({'type': event_type, **payload}, ensure_ascii=False)}\n\n"
+
+
+async def _stream_langgraph_messages(stream, thread_config: dict, thread_id: str, *, check_interrupt: bool):
+    """转发 LangGraph 输出，并将执行错误作为安全 SSE 事件返回。"""
+    try:
+        async for chunk, metadata in stream:
+            additional_kwargs = getattr(chunk, "additional_kwargs", {})
+            if (
+                chunk.content
+                and "research_plan" not in metadata.get("tags", [])
+                and not additional_kwargs.get("tool_calls")
+            ):
+                yield _sse_event("content", content=chunk.content)
+            elif additional_kwargs.get("tool_calls"):
+                tool_data = additional_kwargs["tool_calls"][0]["function"].get("arguments")
+                logger.debug(f"Tool call: {tool_data}")
+
+        if check_interrupt:
+            state = graph.get_state(thread_config)
+            if len(state) > 0 and len(state[-1]) > 0:
+                if len(state[-1][0].interrupts) > 0:
+                    yield _sse_event("interruption", conversation_id=thread_id)
+        yield _sse_event("done")
+    except Exception:
+        logger.error("LangGraph stream failed for conversation %s", thread_id, exc_info=True)
+        yield _sse_event("error", message="LangGraph 流式处理失败。")
+
 # 创建 FastAPI 应用实例
 app = FastAPI(title="AssistGen REST API")
 
@@ -346,62 +377,19 @@ async def langgraph_query(
         # 准备输入状态 - 如果是现有会话，直接传入查询文本
         if state_history and len(state_history) > 0 and len(state_history[-1]) > 0:
             logger.info("Using existing conversation state")
-            # 如果有现有会话，使用resume命令继续对话
-            async def process_stream():
-                async for c, metadata in graph.astream(
-                    Command(resume=query), 
-                    stream_mode="messages", 
-                    config=thread_config
-                ):
-                    # 只处理最终展示给用户的内容，跳过中间工具调用和内部状态
-                    if c.content and "research_plan" not in metadata.get("tags", []) and not c.additional_kwargs.get("tool_calls"):
-                        # 关键修改：使用json.dumps处理content，确保特殊字符如换行符被正确处理
-                        content_json = json.dumps(c.content, ensure_ascii=False)
-                        yield f"data: {content_json}\n\n"
-                        
-                    # 工具调用单独处理，不发送给前端
-                    elif c.additional_kwargs.get("tool_calls"):
-                        tool_data = c.additional_kwargs.get("tool_calls")[0]["function"].get("arguments")
-                        logger.debug(f"Tool call: {tool_data}")
-                        
-                # 处理中断情况
-                state = graph.get_state(thread_config)
-                if len(state) > 0 and len(state[-1]) > 0:
-                    if len(state[-1][0].interrupts) > 0:
-                        interrupt_json = json.dumps({"interruption": True, "conversation_id": thread_id})
-                        yield f"data: {interrupt_json}\n\n"
+            stream = graph.astream(
+                Command(resume=query), stream_mode="messages", config=thread_config
+            )
         else:
-            # 新会话或找不到现有状态，创建新的输入状态
             logger.info("Creating new conversation state")
-            input_state = InputState(messages=query)
-            
-            # 流式处理查询
-            async def process_stream():
-                async for c, metadata in graph.astream(
-                    input=input_state, 
-                    stream_mode="messages", 
-                    config=thread_config
-                ):
-                    # 只处理最终展示给用户的内容，跳过中间工具调用和内部状态
-                    if c.content and "research_plan" not in metadata.get("tags", []) and not c.additional_kwargs.get("tool_calls"):
-                        # 关键修改：使用json.dumps处理content，确保特殊字符如换行符被正确处理
-                        content_json = json.dumps(c.content, ensure_ascii=False)
-                        yield f"data: {content_json}\n\n"
-                        
-                    # 工具调用单独处理，不发送给前端
-                    elif c.additional_kwargs.get("tool_calls"):
-                        tool_data = c.additional_kwargs.get("tool_calls")[0]["function"].get("arguments")
-                        logger.debug(f"Tool call: {tool_data}")
-                        
-                # 处理中断情况
-                state = graph.get_state(thread_config)
-                if len(state) > 0 and len(state[-1]) > 0:
-                    if len(state[-1][0].interrupts) > 0:
-                        interrupt_json = json.dumps({"interruption": True, "conversation_id": thread_id})
-                        yield f"data: {interrupt_json}\n\n"
+            stream = graph.astream(
+                input=InputState(messages=query), stream_mode="messages", config=thread_config
+            )
         
         response = StreamingResponse(
-            process_stream(),
+            _stream_langgraph_messages(
+                stream, thread_config, thread_id, check_interrupt=True
+            ),
             media_type="text/event-stream"
         )
         
@@ -423,22 +411,17 @@ async def langgraph_resume(request: LangGraphResumeRequest):
         # 使用会话ID作为线程ID
         thread_config = {"configurable": {"thread_id": request.conversation_id}}
         
-        # 流式处理恢复
-        async def process_resume():
-            async for c, metadata in graph.astream(Command(resume=request.query), stream_mode="messages", config=thread_config):
-                # 只处理最终展示给用户的内容
-                if c.content and not c.additional_kwargs.get("tool_calls"):
-                    # 同样使用json.dumps处理内容
-                    content_json = json.dumps(c.content, ensure_ascii=False)
-                    yield f"data: {content_json}\n\n"
-                
-                # 工具调用单独处理，不发送给前端
-                elif c.additional_kwargs.get("tool_calls"):
-                    tool_data = c.additional_kwargs.get("tool_calls")[0]["function"].get("arguments")
-                    logger.debug(f"Tool call: {tool_data}")
-        
         return StreamingResponse(
-            process_resume(),
+            _stream_langgraph_messages(
+                graph.astream(
+                    Command(resume=request.query),
+                    stream_mode="messages",
+                    config=thread_config,
+                ),
+                thread_config,
+                request.conversation_id,
+                check_interrupt=True,
+            ),
             media_type="text/event-stream"
         )
         

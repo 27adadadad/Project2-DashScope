@@ -62,3 +62,42 @@ class DashScopeEmbeddings:
         if isinstance(value, Mapping):
             return value.get(field)
         return getattr(value, field, None)
+
+
+class DashScopeSyncEmbeddings:
+    """为要求同步 ``embed_query`` 的 Neo4j 检索器适配 DashScope。"""
+
+    def __init__(
+        self,
+        model: str | None = None,
+        api_key: str | None = None,
+        client: Any | None = None,
+    ):
+        self.model = model or settings.DASHSCOPE_EMBEDDING_MODEL
+        self.dimension = 1024
+        if client is None:
+            import dashscope
+            from dashscope import TextEmbedding
+
+            dashscope.api_key = api_key or settings.DASHSCOPE_API_KEY
+            self._client = TextEmbedding
+        else:
+            self._client = client
+
+    def embed_query(self, text: str) -> list[float]:
+        response = self._client.call(
+            model=self.model,
+            input=text,
+            text_type="query",
+            dimension=self.dimension,
+        )
+        status_code = DashScopeEmbeddings._get_field(response, "status_code")
+        if status_code is not None and status_code != 200:
+            raise RuntimeError("DashScope text embedding request failed")
+
+        output = DashScopeEmbeddings._get_field(response, "output")
+        embeddings = DashScopeEmbeddings._get_field(output, "embeddings") or []
+        embedding = DashScopeEmbeddings._get_field(embeddings[0], "embedding") if embeddings else None
+        if embedding is None:
+            raise RuntimeError("DashScope text embedding response is empty")
+        return list(embedding)

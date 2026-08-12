@@ -104,6 +104,27 @@ class FakeDashScopeService:
             yield event
 
 
+class FakeChunk:
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.additional_kwargs = {"tool_calls": tool_calls} if tool_calls else {}
+
+
+class FakeGraph:
+    def __init__(self, events, error=None):
+        self.events = events
+        self.error = error
+
+    def get_state(self, _config):
+        return []
+
+    async def astream(self, *args, **kwargs):
+        if self.error:
+            raise self.error
+        for event in self.events:
+            yield event, {"tags": []}
+
+
 def test_chat_uses_dashscope_normal_stream_and_preserves_completion_callback(monkeypatch):
     module = import_main(monkeypatch)
     service = FakeDashScopeService(
@@ -185,3 +206,43 @@ def test_reason_maps_dashscope_error_to_safe_http_error(monkeypatch):
 
     assert exc_info.value.status_code == 502
     assert exc_info.value.detail == "DashScope request rate limit exceeded."
+
+
+def test_langgraph_query_streams_typed_content_and_done(monkeypatch):
+    module = import_main(monkeypatch)
+    monkeypatch.setattr(module, "graph", FakeGraph([FakeChunk("回答")]))
+    monkeypatch.setattr(module, "InputState", lambda **kwargs: SimpleNamespace(**kwargs))
+
+    response = asyncio.run(
+        module.langgraph_query(query="问题", user_id=7, conversation_id=None, image=None)
+    )
+
+    assert response.headers["X-Conversation-ID"]
+    assert asyncio.run(collect_response(response)) == [
+        'data: {"type": "content", "content": "回答"}\n\n',
+        'data: {"type": "done"}\n\n',
+    ]
+
+
+def test_langgraph_resume_streams_safe_error_instead_of_aborting(monkeypatch):
+    module = import_main(monkeypatch)
+    monkeypatch.setattr(module, "graph", FakeGraph([], error=RuntimeError("secret upstream detail")))
+    monkeypatch.setattr(module, "Command", lambda **kwargs: kwargs)
+
+    request = module.LangGraphResumeRequest(
+        query="继续", user_id=7, conversation_id="conversation-1"
+    )
+    response = asyncio.run(module.langgraph_resume(request))
+
+    assert asyncio.run(collect_response(response)) == [
+        'data: {"type": "error", "message": "LangGraph 流式处理失败。"}\n\n'
+    ]
+
+
+def test_readmes_describe_the_json_type_sse_protocol():
+    project_root = Path(__file__).resolve().parents[4]
+    for readme in (project_root / "README.md", project_root / "deepseek_agent" / "README.md"):
+        content = readme.read_text(encoding="utf-8")
+        assert "data:" in content
+        assert '"type"' in content
+        assert "event: <类型>" not in content

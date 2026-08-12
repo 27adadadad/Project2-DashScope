@@ -46,14 +46,14 @@ python run.py
 
 ## 流式接口
 
-`POST /api/chat` 与 `POST /api/reason` 返回 `text/event-stream`。每个事件使用 `event: <类型>` 与 JSON `data` 负载：
+`POST /api/chat`、`POST /api/reason` 与 LangGraph 流式接口返回 `text/event-stream`。每条 SSE 均仅使用 `data:` 行，负载为 JSON，例如 `data: {"type":"content","content":"你好"}`：
 
 - `content`：回答正文增量。
 - `reasoning`：仅思考模式可能出现的推理增量。
 - `done`：流正常结束。
 - `error`：上游认证、限流、超时或服务错误的安全提示，不泄露上游响应内容。
 
-`/api/reason` 会同时产生 `reasoning` 和 `content`；普通聊天通常只产生 `content`、`done` 或 `error`。客户端应按事件类型累积内容，而不是假设每个事件都包含正文。
+`/api/reason` 会同时产生 `reasoning` 和 `content`；普通聊天通常只产生 `content`、`done` 或 `error`。`/api/langgraph/query` 和 `/api/langgraph/resume` 同样发送 `content`、`done`、`error`，并可发送带 `conversation_id` 的 `interruption`。客户端应读取 JSON 的 `type` 字段并按类型累积内容，而不是依赖 SSE 的 `event:` 字段或假设每个事件都包含正文。
 
 ## RAG 行为
 
