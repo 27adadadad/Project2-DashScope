@@ -1,6 +1,14 @@
 # 敏感配置
 .env
 *.env
+.env.*
+!.env.example
+
+# 学习记录与本地协作约束
+AGENTS.md
+PROCESS.md
+INTERVIEW_GUIDE.md
+docs/
 
 # 数据文件
 *.pdf
@@ -18,6 +26,24 @@
 **/data/logs/
 **/inputs/
 **/lancedb/
+**/data/*
+!**/data/settings.yaml
+!**/data/settings_csv.yaml
+!**/data/settings_pdf.yaml
+!**/data/prompts/
+!**/data/prompts/**
+
+# 用户上传、离线评测与临时运行目录
+**/uploads/
+**/evals/
+**/.tmp/
+**/llm_backend/llm_backend/
+**/requirements-eval.txt
+
+# 测试代码及测试数据
+**/test/
+**/tests/
+**/test_*.py
 
 # 日志
 *.log
@@ -40,3 +66,7 @@ env/
 
 # 本地 Git 工作树
 .worktrees/
+.github-public/
+
+# 本地临时目录
+nova-baseline-tmp/
