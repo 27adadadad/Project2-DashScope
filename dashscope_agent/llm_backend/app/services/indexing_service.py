@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Optional, Dict, Any
 import mimetypes
@@ -9,12 +10,13 @@ import uuid
 
 from app.core.config import settings
 from app.core.logger import get_logger
+from app.services.graphrag_paths import resolve_graphrag_project_dir
 
 logger = get_logger(service="indexing")
 
 class IndexingService:
     def __init__(self):
-        self.project_dir = settings.GRAPHRAG_PROJECT_DIR
+        self.project_dir = resolve_graphrag_project_dir(settings.GRAPHRAG_PROJECT_DIR)
         self.data_dir_name = settings.GRAPHRAG_DATA_DIR
         self.data_dir = os.path.join(self.project_dir, self.data_dir_name)
         
@@ -31,12 +33,27 @@ class IndexingService:
     def _get_config_file(self, file_type: str) -> str:
         """根据文件类型获取对应的配置文件"""
         return self.config_mapping.get(file_type, self.default_config)
+
+    @staticmethod
+    def _configure_graphrag_environment() -> None:
+        """让 GraphRAG YAML 能读取已由 Settings 校验过的 DashScope 配置。"""
+        values = {
+            "DASHSCOPE_API_KEY": settings.DASHSCOPE_API_KEY,
+            "DASHSCOPE_COMPATIBLE_BASE_URL": settings.DASHSCOPE_COMPATIBLE_BASE_URL,
+            "DASHSCOPE_CHAT_MODEL": settings.DASHSCOPE_CHAT_MODEL,
+            "DASHSCOPE_EMBEDDING_MODEL": settings.DASHSCOPE_EMBEDDING_MODEL,
+        }
+        for name, value in values.items():
+            if value:
+                os.environ.setdefault(name, str(value))
     
-    def _check_existing_index(self, file_path: str, output_dir: str) -> bool:
-        """检查文件是否已经建立索引"""
-        file_name = Path(file_path).stem
-        index_path = os.path.join(output_dir, f"{file_name}_index")
-        return os.path.exists(index_path)
+    def _check_existing_index(self, output_dir: str) -> bool:
+        """判断该用户目录下是否已有可增量更新的索引产物。
+
+        GraphRAG 的产物是一组 parquet 表（documents/entities/community_reports 等），
+        并不会生成 `<文件名>_index` 目录；因此以最先写出的 documents.parquet 是否存在为准。
+        """
+        return os.path.isfile(os.path.join(output_dir, "documents.parquet"))
     
     def _prepare_user_directories(self, user_id: int) -> tuple:
         """为用户准备输入和输出目录"""
@@ -89,7 +106,7 @@ class IndexingService:
             logger.info(f"使用配置文件: {config_file}")
             
             # 检查是否需要增量更新
-            is_update = self._check_existing_index(input_file_path, user_output_dir)
+            is_update = self._check_existing_index(user_output_dir)
             
             # 准备配置
             config_path = os.path.join(self.data_dir, config_file)
@@ -101,11 +118,13 @@ class IndexingService:
             config_overrides = {
                 'input.base_dir': user_input_dir,
                 'output.base_dir': user_output_dir,
-                # 更新文件匹配模式以匹配文件名
-                'input.file_pattern': f".*{os.path.basename(input_file_path)}$$"
+                # GraphRAG 会把该值 re.compile 后对完整路径做 search，
+                # 因此必须对文件名转义（否则 . - 等会被当成正则元字符），并以 $ 锚定文件名结尾。
+                'input.file_pattern': re.escape(os.path.basename(input_file_path)) + "$",
             }
             
             # 加载配置
+            self._configure_graphrag_environment()
             graphrag_config = load_config(
                 Path(self.data_dir),
                 Path(config_path),
@@ -147,7 +166,16 @@ class IndexingService:
                     result_info['status'] = 'error'
                     result_info['errors'] = workflow_result.errors
                     logger.error(f"索引构建失败: {workflow_result.errors}")
-            
+
+            # 索引成功后立即预计算文本块向量，问答阶段只需生成查询向量
+            if result_info['status'] == 'success':
+                try:
+                    from app.services.graphrag_retriever import warm_text_unit_index
+
+                    await warm_text_unit_index(user_output_dir)
+                except Exception:
+                    logger.warning("混合检索索引预热失败", exc_info=True)
+
             return result_info
             
         except Exception as e:
