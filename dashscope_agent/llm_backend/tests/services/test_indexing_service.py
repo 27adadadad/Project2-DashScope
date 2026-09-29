@@ -64,3 +64,30 @@ def test_indexing_service_defaults_to_empty_file_type_mapping(monkeypatch):
 
     assert service.config_mapping == {}
     assert service._get_config_file("application/pdf") == "settings.yaml"
+
+
+def test_indexing_service_exposes_validated_dashscope_settings_to_graphrag(monkeypatch):
+    from app.services import indexing_service as module
+
+    monkeypatch.delenv("DASHSCOPE_COMPATIBLE_BASE_URL", raising=False)
+    monkeypatch.delenv("DASHSCOPE_CHAT_MODEL", raising=False)
+    monkeypatch.delenv("DASHSCOPE_EMBEDDING_MODEL", raising=False)
+    monkeypatch.setattr(
+        module.settings,
+        "DASHSCOPE_COMPATIBLE_BASE_URL",
+        "https://example.test/compatible/v1",
+    )
+    monkeypatch.setattr(module.settings, "DASHSCOPE_CHAT_MODEL", "test-chat")
+    monkeypatch.setattr(
+        module.settings,
+        "DASHSCOPE_EMBEDDING_MODEL",
+        "test-embedding",
+    )
+
+    module.IndexingService()._configure_graphrag_environment()
+
+    assert __import__("os").environ["DASHSCOPE_COMPATIBLE_BASE_URL"] == (
+        "https://example.test/compatible/v1"
+    )
+    assert __import__("os").environ["DASHSCOPE_CHAT_MODEL"] == "test-chat"
+    assert __import__("os").environ["DASHSCOPE_EMBEDDING_MODEL"] == "test-embedding"

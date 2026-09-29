@@ -73,6 +73,29 @@ def test_embed_documents_uses_native_text_embedding_document_mode(monkeypatch):
     assert client.calls[0]["text_type"] == "document"
 
 
+def test_embed_documents_splits_requests_larger_than_twenty_items(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    monkeypatch.setenv("SERPAPI_KEY", "test-serpapi-key")
+    monkeypatch.setenv("DB_HOST", "localhost")
+    monkeypatch.setenv("DB_PORT", "3306")
+    monkeypatch.setenv("DB_USER", "test-user")
+    monkeypatch.setenv("DB_PASSWORD", "test-password")
+    monkeypatch.setenv("DB_NAME", "test-db")
+    monkeypatch.setenv("REDIS_HOST", "localhost")
+    monkeypatch.setenv("REDIS_PORT", "6379")
+    sys.modules.pop("app.core.config", None)
+    sys.modules.pop("app.services.dashscope_embeddings", None)
+    from app.services.dashscope_embeddings import DashScopeEmbeddings
+
+    client = FakeTextEmbedding()
+    asyncio.run(DashScopeEmbeddings(client=client).embed_documents([f"文档{i}" for i in range(21)]))
+
+    assert [call["input"] for call in client.calls] == [
+        [f"文档{i}" for i in range(20)],
+        ["文档20"],
+    ]
+
+
 def test_sync_embedder_adapts_dashscope_for_neo4j_retrievers(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
     monkeypatch.setenv("SERPAPI_KEY", "test-serpapi-key")

@@ -2,6 +2,7 @@
 
 import ast
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -90,3 +91,18 @@ def test_indexing_graphrag_data_configs_use_dashscope_for_all_models():
     assert "image_description_api_key: ${DASHSCOPE_API_KEY}" in pdf_settings
     assert "image_description_model: ${DASHSCOPE_VISION_MODEL}" in pdf_settings
     assert "image_description_base_url: ${DASHSCOPE_COMPATIBLE_BASE_URL}" in pdf_settings
+
+
+def test_indexing_settings_reference_existing_prompt_files():
+    """索引配置中的 Prompt 必须相对 data 目录真实存在。"""
+    data_dir = GRAPHRAG_ROOT / "data"
+    settings = (data_dir / "settings.yaml").read_text(encoding="utf-8")
+    prompt_paths = re.findall(
+        r'^\s*(?:prompt|graph_prompt|text_prompt|map_prompt|reduce_prompt|knowledge_prompt):\s*"([^"]+)"',
+        settings,
+        flags=re.MULTILINE,
+    )
+    assert prompt_paths
+
+    for prompt_path in prompt_paths:
+        assert (data_dir / prompt_path).is_file(), f"缺少 GraphRAG Prompt: {prompt_path}"

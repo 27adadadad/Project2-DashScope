@@ -9,6 +9,18 @@ from pydantic import ValidationError
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
+def test_env_file_is_at_agent_project_root():
+    config_module = importlib.import_module("app.core.config")
+
+    assert config_module.ENV_FILE == Path(__file__).resolve().parents[3] / ".env"
+
+
+def test_graphrag_project_dir_is_relative_to_backend_working_directory():
+    config_module = importlib.import_module("app.core.config")
+
+    assert config_module.Settings.model_fields["GRAPHRAG_PROJECT_DIR"].default == "app/graphrag"
+
+
 def test_settings_require_dashscope_api_key(monkeypatch):
     required_non_model_settings = {
         "SERPAPI_KEY": "test-serpapi-key",

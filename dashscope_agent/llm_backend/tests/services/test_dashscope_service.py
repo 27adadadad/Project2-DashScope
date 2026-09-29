@@ -114,6 +114,27 @@ def test_multimodal_reasoning_and_content_blocks_are_normalized(monkeypatch):
     assert "\\u" not in events[0]
 
 
+def test_default_text_stream_uses_generation_but_image_keeps_multimodal_client(monkeypatch):
+    module = import_service(monkeypatch)
+    generation_client = object()
+    multimodal_client = object()
+    monkeypatch.setattr(
+        module.DashScopeService,
+        "_load_generation",
+        staticmethod(lambda: generation_client),
+    )
+    monkeypatch.setattr(
+        module.DashScopeService,
+        "_load_multimodal_conversation",
+        staticmethod(lambda: multimodal_client),
+    )
+
+    service = module.DashScopeService()
+
+    assert service._generation_client is generation_client
+    assert service._conversation_client is multimodal_client
+
+
 def test_successful_stream_calls_on_complete_with_only_final_content(monkeypatch):
     module = import_service(monkeypatch)
     conversation = FakeConversation(
