@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
@@ -8,14 +8,15 @@ from app.services.user_service import UserService
 from app.core.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
+# tokenUrl 必须与真实登录路由一致，否则 Swagger 的 Authorize 会打到不存在的地址
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/token")
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
@@ -36,9 +37,16 @@ async def get_current_user(
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-        
+
     user_service = UserService(db)
     user = await user_service.get_user_by_email(email)
     if user is None:
         raise credentials_exception
-    return user 
+
+    # 令牌可能仍然有效，但账号已被禁用/注销，此时必须拒绝
+    if user.status and user.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="账号已被禁用",
+        )
+    return user

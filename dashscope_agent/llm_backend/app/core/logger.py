@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 import json
 
+from app.core.request_context import get_request_id
+
 # 创建日志目录， Path 指的是当前工作目录下的 logs 目录。如果你在不同的目录中运行脚本，logs 目录的位置也会相应变化。
 # 也就是说：logs 目录的位置取决于运行 Python 程序时的当前工作目录。不同的组件或模块在不同的工作目录下运行时，logs 目录也会位于不同的位置。
 log_dir = Path("logs")
@@ -45,5 +47,5 @@ def get_logger(service: str):
     return logger.bind(service=service)
 
 def log_structured(event_type: str, data: dict):
-    """结构化日志记录"""
-    logger.info({"event_type": event_type, "data": data}) 
+    """结构化日志记录；带上当前请求 ID，便于把业务事件与访问日志关联起来。"""
+    logger.info({"event_type": event_type, "request_id": get_request_id(), "data": data}) 

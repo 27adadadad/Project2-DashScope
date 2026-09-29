@@ -44,4 +44,9 @@ async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
 @router.get("/users/me", response_model=UserResponse)
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
     """获取当前登录用户的信息"""
-    return current_user 
+    return current_user
+
+@router.get("/validate-token")
+async def validate_token(current_user: User = Depends(get_current_user)):
+    """供前端启动时校验本地缓存的 token 是否仍然可用"""
+    return {"valid": True, "user_id": current_user.id, "email": current_user.email} 
