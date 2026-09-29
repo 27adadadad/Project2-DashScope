@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from app.core.logger import get_logger
+from app.core.sse import sse_event
 from app.prompts.search_prompts import SEARCH_SUMMARY_PROMPT, SEARCH_SYSTEM_PROMPT
 from app.services.dashscope_service import DashScopeService, DashScopeServiceError
 from app.services.function_tools import FunctionTool, ToolRegistry
@@ -137,4 +138,4 @@ class SearchService:
 
     @staticmethod
     def _event(event_type: str, **payload: Any) -> str:
-        return f"data: {json.dumps({'type': event_type, **payload}, ensure_ascii=False)}\n\n"
+        return sse_event(event_type, **payload)
