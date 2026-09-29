@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import inspect
-import json
 import logging
 import mimetypes
 import threading
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from app.core.config import settings
+from app.core.sse import sse_event
 
 
 logger = logging.getLogger(__name__)
@@ -34,12 +34,30 @@ class DashScopeServiceError(RuntimeError):
 
 
 class DashScopeService:
-    """把 DashScope ``MultiModalConversation`` 的模型流转换为 SSE。"""
+    """将 DashScope 文本与多模态模型的输出转换为 SSE。"""
 
-    def __init__(self, conversation_client: Optional[Any] = None) -> None:
+    def __init__(
+        self,
+        generation_client: Optional[Any] = None,
+        conversation_client: Optional[Any] = None,
+    ) -> None:
+        self._generation_client = (
+            generation_client
+            or conversation_client
+            or self._load_generation()
+        )
         self._conversation_client = (
             conversation_client or self._load_multimodal_conversation()
         )
+
+    @staticmethod
+    def _load_generation() -> Any:
+        """加载文本生成客户端，供普通聊天、推理与工具调用使用。"""
+        import dashscope
+        from dashscope import Generation
+
+        dashscope.base_http_api_url = settings.DASHSCOPE_BASE_URL
+        return Generation
 
     @staticmethod
     def _load_multimodal_conversation() -> Any:
@@ -215,7 +233,7 @@ class DashScopeService:
     async def _iterate_chunks(
         self, request: dict[str, Any]
     ) -> AsyncGenerator[Any, None]:
-        call = self._conversation_client.call
+        call = self._generation_client.call
         if inspect.iscoroutinefunction(call):
             stream = await call(**request)
             if inspect.isawaitable(stream):
@@ -232,7 +250,7 @@ class DashScopeService:
             yield chunk
 
     async def _call_once(self, request: dict[str, Any]) -> Any:
-        call = self._conversation_client.call
+        call = self._generation_client.call
         if inspect.iscoroutinefunction(call):
             response = await call(**request)
         else:
@@ -331,12 +349,13 @@ class DashScopeService:
     def _sse_event(
         event_type: str, content: Optional[str] = None, message: Optional[str] = None
     ) -> str:
-        payload: dict[str, str] = {"type": event_type}
+        """按需带上 content/message，具体序列化交给 app.core.sse 统一处理。"""
+        payload: dict[str, str] = {}
         if content is not None:
             payload["content"] = content
         if message is not None:
             payload["message"] = message
-        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        return sse_event(event_type, **payload)
 
     @classmethod
     def _raise_for_error_chunk(cls, chunk: Any) -> None:

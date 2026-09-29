@@ -3,7 +3,7 @@ from app.core.database import AsyncSessionLocal
 from app.models.conversation import Conversation, DialogueType
 from app.models.message import Message
 from app.core.logger import get_logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 logger = get_logger(service="conversation")
 
@@ -42,19 +42,26 @@ class ConversationService:
         """保存对话消息"""
         try:
             async with AsyncSessionLocal() as db:
-                # 查询会话
-                stmt = select(Conversation).where(Conversation.id == conversation_id)
+                # 查询会话：必须同时匹配会话ID与所属用户，避免把消息写进他人的会话
+                stmt = select(Conversation).where(
+                    Conversation.id == conversation_id,
+                    Conversation.user_id == user_id,
+                )
                 result = await db.execute(stmt)
                 conversation = result.scalar_one_or_none()
-                
+
                 if not conversation:
-                    logger.error(f"Conversation {conversation_id} not found")
+                    logger.error(
+                        f"Conversation {conversation_id} not found or not owned by user {user_id}"
+                    )
                     return
-                    
-                # 查询现有消息数量
-                stmt = select(Message).where(Message.conversation_id == conversation_id)
+
+                # 统计已有消息数量（交给数据库计数，避免把整表消息拉回内存）
+                stmt = select(func.count()).select_from(Message).where(
+                    Message.conversation_id == conversation_id
+                )
                 result = await db.execute(stmt)
-                messages_count = len(result.all())
+                messages_count = result.scalar_one()
                 
                 # 获取用户的问题内容
                 user_content = next((msg["content"] for msg in messages if msg["role"] == "user"), "")
@@ -156,17 +163,22 @@ class ConversationService:
             raise
 
     @staticmethod
-    async def delete_conversation(conversation_id: int):
+    async def delete_conversation(conversation_id: int, user_id: int):
         """删除会话及其所有消息"""
         try:
             async with AsyncSessionLocal() as db:
                 # 查询会话
-                stmt = select(Conversation).where(Conversation.id == conversation_id)
+                stmt = select(Conversation).where(
+                    Conversation.id == conversation_id,
+                    Conversation.user_id == user_id,
+                )
                 result = await db.execute(stmt)
                 conversation = result.scalar_one_or_none()
                 
                 if not conversation:
-                    raise ValueError(f"Conversation {conversation_id} not found")
+                    raise ValueError(
+                        f"Conversation {conversation_id} not found or not owned by user {user_id}"
+                    )
                 
                 # 删除会话(会自动级联删除相关消息)
                 await db.delete(conversation)
@@ -178,17 +190,22 @@ class ConversationService:
             raise
 
     @staticmethod
-    async def update_conversation_name(conversation_id: int, name: str):
+    async def update_conversation_name(conversation_id: int, name: str, user_id: int):
         """更新会话名称"""
         try:
             async with AsyncSessionLocal() as db:
                 # 查询会话
-                stmt = select(Conversation).where(Conversation.id == conversation_id)
+                stmt = select(Conversation).where(
+                    Conversation.id == conversation_id,
+                    Conversation.user_id == user_id,
+                )
                 result = await db.execute(stmt)
                 conversation = result.scalar_one_or_none()
                 
                 if not conversation:
-                    raise ValueError(f"Conversation {conversation_id} not found")
+                    raise ValueError(
+                        f"Conversation {conversation_id} not found or not owned by user {user_id}"
+                    )
                 
                 # 更新名称
                 conversation.title = name
@@ -197,4 +214,4 @@ class ConversationService:
                 logger.info(f"已更新会话 {conversation_id} 的名称为 {name}")
         except Exception as e:
             logger.error(f"更新会话名称失败: {str(e)}", exc_info=True)
-            raise 
+            raise

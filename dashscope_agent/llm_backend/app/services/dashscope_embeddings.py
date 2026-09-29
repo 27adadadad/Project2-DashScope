@@ -10,6 +10,8 @@ from app.core.config import settings
 class DashScopeEmbeddings:
     """使用 DashScope ``TextEmbedding`` 生成 1024 维向量。"""
 
+    _MAX_DOCUMENT_BATCH_SIZE = 20
+
     def __init__(
         self,
         model: str | None = None,
@@ -36,7 +38,13 @@ class DashScopeEmbeddings:
         """为待索引文档生成向量。"""
         if not texts:
             return []
-        return await self._embed(list(texts), text_type="document")
+
+        documents = list(texts)
+        vectors: list[list[float]] = []
+        for start in range(0, len(documents), self._MAX_DOCUMENT_BATCH_SIZE):
+            batch = documents[start : start + self._MAX_DOCUMENT_BATCH_SIZE]
+            vectors.extend(await self._embed(batch, text_type="document"))
+        return vectors
 
     async def _embed(self, input_text: str | list[str], *, text_type: str) -> list[list[float]]:
         response = await asyncio.to_thread(

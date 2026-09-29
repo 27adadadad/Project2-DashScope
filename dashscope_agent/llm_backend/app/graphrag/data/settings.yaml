@@ -88,13 +88,13 @@ output:
 ### Workflow settings ###
 extract_graph:
   model_id: default_chat_model
-  prompt: "prompt_turn_output/extract_graph_zh.txt"
+  prompt: "prompts/extract_graph_zh.txt"
   entity_types: [company, person, product, technology, service, location, university, investment, acquisition, operating system, artificial intelligence, quantum computing, ecosystem, competition, collaboration, market value, innovation, industry, economic impact]
   max_gleanings: 1
 
 summarize_descriptions:
   model_id: default_chat_model
-  prompt: "prompt_turn_output/summarize_descriptions_zh.txt"
+  prompt: "prompts/summarize_descriptions_zh.txt"
   max_length: 500
 
 extract_graph_nlp:
@@ -110,7 +110,7 @@ extract_claims:
 
 community_reports:
   model_id: default_chat_model
-  graph_prompt: "prompt_turn_output/community_report_graph_zh.txt"
+  graph_prompt: "prompts/community_report_graph_zh.txt"
   text_prompt: "prompts/community_report_text_zh.txt"
   max_length: 2000
   max_input_length: 8000
@@ -147,7 +147,7 @@ drift_search:
   chat_model_id: default_chat_model
   embedding_model_id: default_embedding_model
   prompt: "prompts/drift_search_system_prompt.txt"
-  reduce_prompt: "prompts/drift_search_reduce_prompt.txt"
+  reduce_prompt: "prompts/drift_reduce_prompt.txt"
 
 basic_search:
   chat_model_id: default_chat_model

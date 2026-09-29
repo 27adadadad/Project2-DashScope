@@ -1,205 +1,246 @@
-from typing import Dict, List, Optional
-import redis
+"""基于语义相似度的 Redis 缓存。
+
+设计要点：
+- 使用 ``redis.asyncio``：同步客户端在事件循环里没有切换点，会阻塞整个进程的并发请求；
+- 客户端进程级共享：每次请求新建连接池会快速耗尽 Redis 连接数；
+- 用 ``SCAN`` 而非 ``KEYS``：``KEYS`` 是阻塞式全库扫描，会卡住 Redis 主线程；
+- 向量存 float32 原始字节而非 JSON 文本，体积与解析成本都更低；
+- 候选向量一次 ``MGET`` 批量取回，避免「一个缓存项一次往返」。
+"""
+
+import asyncio
 import hashlib
-import numpy as np
 import json
 import time
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import redis.asyncio as aioredis
+
 from app.core.config import settings
 from app.core.logger import get_logger
 from app.services.dashscope_embeddings import DashScopeEmbeddings
-import asyncio
-from datetime import datetime
 
 logger = get_logger(service="redis_cache")
 
+_VECTOR_DTYPE = np.float32
+_shared_client: Optional[aioredis.Redis] = None
+
+
+def get_shared_redis_client() -> aioredis.Redis:
+    """返回进程级共享的异步 Redis 客户端（惰性创建，不在此处建立连接）。"""
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = aioredis.from_url(settings.REDIS_URL)
+    return _shared_client
+
+
 class RedisSemanticCache:
-    """基于语义的 Redis 缓存实现"""
-    
+    """基于语义的 Redis 缓存实现（按用户前缀隔离）。"""
+
     def __init__(
         self,
         redis_url: str = None,
         model_name: str = None,
         score_threshold: float = None,
         prefix: str = "cache",
-        user_id: Optional[int] = None,  # 添加用户ID
-        max_cache_size: int = 1000,  # 每个用户最大缓存条数
-        cleanup_interval: int = 3600  # 清理间隔(秒)
+        user_id: Optional[int] = None,
+        client: Any = None,
+        max_cache_size: int = 1000,
+        cleanup_interval: int = 3600,
+        start_auto_cleanup: bool = False,
     ):
-        self.redis = redis.from_url(redis_url or settings.REDIS_URL)
+        if client is not None:
+            self.redis = client
+        elif redis_url:
+            self.redis = aioredis.from_url(redis_url)
+        else:
+            # 主链路使用共享客户端，避免每个请求都新建连接池
+            self.redis = get_shared_redis_client()
         self.model_name = model_name or settings.DASHSCOPE_EMBEDDING_MODEL
         self.embeddings = DashScopeEmbeddings(model=self.model_name)
         self.score_threshold = score_threshold or settings.REDIS_CACHE_THRESHOLD
         self.prefix = f"{prefix}:{user_id}" if user_id else prefix
         self.max_cache_size = max_cache_size
         self.cleanup_interval = cleanup_interval
-        
-        # 启动自动清理任务
-        asyncio.create_task(self._auto_cleanup())
-        
+        self._cleanup_task: Optional[asyncio.Task] = None
+
+        if start_auto_cleanup:
+            self._cleanup_task = asyncio.create_task(self._auto_cleanup())
+
     async def _get_embedding(self, text: str) -> List[float]:
-        """获取文本向量"""
-        try:
-            embedding = await self.embeddings.embed_query(text)
-            if not embedding:
-                raise ValueError("Failed to get embedding")
-            return embedding
-        except Exception as e:
-            logger.error(f"Error in get_embedding: {str(e)}", exc_info=True)
-            raise
-        
+        """获取文本向量。"""
+        embedding = await self.embeddings.embed_query(text)
+        if not embedding:
+            raise ValueError("Failed to get embedding")
+        return embedding
+
+    @staticmethod
+    def _hash(message: str) -> str:
+        return hashlib.md5(message.encode()).hexdigest()
+
     def _get_vector_key(self, message: str) -> str:
-        """生成向量存储的键名"""
-        message_hash = hashlib.md5(message.encode()).hexdigest()
-        return f"{self.prefix}:vec:{message_hash}"
-        
+        return f"{self.prefix}:vec:{self._hash(message)}"
+
     def _get_response_key(self, message: str) -> str:
-        """生成响应存储的键名"""
-        message_hash = hashlib.md5(message.encode()).hexdigest()
-        return f"{self.prefix}:resp:{message_hash}"
-        
+        return f"{self.prefix}:resp:{self._hash(message)}"
+
     def _get_metadata_key(self, message: str) -> str:
-        """生成元数据存储的键名"""
-        message_hash = hashlib.md5(message.encode()).hexdigest()
-        return f"{self.prefix}:meta:{message_hash}"
+        return f"{self.prefix}:meta:{self._hash(message)}"
 
     def _get_last_user_message(self, messages: List[Dict]) -> str:
-        """获取最后一条用户消息"""
+        """获取最后一条用户消息。"""
         for msg in reversed(messages):
-            if msg["role"] == "user":
-                return msg["content"]
+            if msg.get("role") == "user":
+                return msg.get("content", "")
         return ""
 
+    async def _scan_keys(self, pattern: str) -> List[str]:
+        """用 SCAN 增量遍历键，避免 KEYS 阻塞 Redis 主线程。"""
+        keys: List[str] = []
+        async for key in self.redis.scan_iter(match=pattern, count=200):
+            keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
+        return keys
+
     async def _auto_cleanup(self):
-        """自动清理过期和超量的缓存"""
+        """缓存条数超过上限时按最后访问时间淘汰；仅显式开启时运行。"""
         while True:
             try:
-                # 获取当前用户的所有缓存键
-                pattern = f"{self.prefix}:meta:*"
-                all_keys = [key.decode('utf-8') for key in self.redis.keys(pattern)]  # 解码key
-                
-                if len(all_keys) > self.max_cache_size:
-                    # 按访问时间排序
-                    cache_items = []
-                    for key in all_keys:
-                        metadata = json.loads(self.redis.get(key.encode('utf-8')).decode('utf-8'))  # 编码key再获取
-                        cache_items.append((key, metadata.get("last_access", 0)))
-                    
-                    # 按最后访问时间排序
-                    cache_items.sort(key=lambda x: x[1])
-                    
-                    # 删除最旧的条目直到达到限制
-                    items_to_remove = len(all_keys) - self.max_cache_size
-                    for key, _ in cache_items[:items_to_remove]:
-                        hash_id = key.split(":")[-1]
-                        await self._remove_cache_item(hash_id)
-                        
-                logger.info(f"Cache cleanup completed for prefix {self.prefix}")
-                
-            except Exception as e:
-                logger.error(f"Error in cache cleanup: {str(e)}", exc_info=True)
-                
+                meta_keys = await self._scan_keys(f"{self.prefix}:meta:*")
+                if len(meta_keys) > self.max_cache_size:
+                    metadata = await self.redis.mget(meta_keys)
+                    items = sorted(
+                        zip(meta_keys, metadata), key=lambda item: self._last_access(item[1])
+                    )
+                    for key, _ in items[: len(meta_keys) - self.max_cache_size]:
+                        await self._remove_cache_item(key.split(":")[-1])
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("缓存清理失败", exc_info=True)
+
             await asyncio.sleep(self.cleanup_interval)
 
-    async def _remove_cache_item(self, hash_id: str):
-        """删除一个缓存项的所有相关键"""
+    @staticmethod
+    def _last_access(raw_metadata: Any) -> float:
+        if not raw_metadata:
+            return 0.0
         try:
-            # 所有key都需要编码
-            self.redis.delete(
-                f"{self.prefix}:vec:{hash_id}".encode('utf-8'),
-                f"{self.prefix}:resp:{hash_id}".encode('utf-8'),
-                f"{self.prefix}:meta:{hash_id}".encode('utf-8')
-            )
-        except Exception as e:
-            logger.error(f"Error removing cache item: {str(e)}", exc_info=True)
+            return float(json.loads(raw_metadata)["last_access"])
+        except (ValueError, KeyError, TypeError):
+            return 0.0
+
+    async def _remove_cache_item(self, hash_id: str):
+        """删除一个缓存项的所有相关键。"""
+        await self.redis.delete(
+            f"{self.prefix}:vec:{hash_id}",
+            f"{self.prefix}:resp:{hash_id}",
+            f"{self.prefix}:meta:{hash_id}",
+        )
 
     async def _update_metadata(self, message: str):
-        """更新缓存项的元数据"""
-        try:
-            meta_key = self._get_metadata_key(message)
-            # 从Redis读取的是bytes,需要解码
-            current_meta = self.redis.get(meta_key)
-            if current_meta:
-                current_meta = json.loads(current_meta.decode('utf-8'))
-            else:
-                current_meta = {"access_count": 0}
-                
-            metadata = {
-                "last_access": datetime.now().timestamp(),
-                "access_count": current_meta["access_count"] + 1
-            }
-            self.redis.set(meta_key, json.dumps(metadata), ex=settings.REDIS_CACHE_EXPIRE)
-        except Exception as e:
-            logger.error(f"Error updating metadata: {str(e)}", exc_info=True)
+        """更新缓存项的元数据（访问次数与最后访问时间）。"""
+        meta_key = self._get_metadata_key(message)
+        current_meta = await self.redis.get(meta_key)
+        if current_meta:
+            try:
+                access_count = int(json.loads(current_meta)["access_count"]) + 1
+            except (ValueError, KeyError, TypeError):
+                access_count = 1
+        else:
+            access_count = 1
+
+        metadata = {
+            "last_access": time.monotonic(),
+            "access_count": access_count,
+        }
+        await self.redis.set(
+            meta_key, json.dumps(metadata), ex=settings.REDIS_CACHE_EXPIRE
+        )
 
     async def lookup(self, messages: List[Dict]) -> Optional[str]:
-        """查找缓存的响应"""
+        """查找语义最接近的缓存回答；任何故障都降级为未命中。"""
         try:
             user_message = self._get_last_user_message(messages)
             if not user_message:
                 return None
 
-            current_vector = await self._get_embedding(user_message)
-            
-            # 获取当前用户的所有缓存向量
-            pattern = f"{self.prefix}:vec:*"
-            all_vectors = [key.decode('utf-8') for key in self.redis.keys(pattern)]  # 解码key
-            max_similarity = 0
-            most_similar_key = None
-            
-            for vec_key in all_vectors:
-                cached_vector = json.loads(self.redis.get(vec_key.encode('utf-8')).decode('utf-8'))  # 编码key再获取
-                similarity = np.dot(current_vector, cached_vector) / (
-                    np.linalg.norm(current_vector) * np.linalg.norm(cached_vector)
-                )
-                
-                if similarity > max_similarity:
-                    max_similarity = similarity
-                    most_similar_key = vec_key
-            
-            if max_similarity >= self.score_threshold and most_similar_key:
-                hash_id = most_similar_key.split(":")[-1]
-                resp_key = f"{self.prefix}:resp:{hash_id}"
-                cached_response = self.redis.get(resp_key.encode('utf-8'))  # 编码key
-                
-                if cached_response:
-                    # 更新访问元数据
-                    await self._update_metadata(user_message)
-                    logger.info(f"Cache hit with similarity: {max_similarity:.4f}")
-                    return cached_response.decode('utf-8')
-                    
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error in lookup: {str(e)}", exc_info=True)
+            current_vector = np.asarray(await self._get_embedding(user_message), dtype=_VECTOR_DTYPE)
+            vector_keys = await self._scan_keys(f"{self.prefix}:vec:*")
+            if not vector_keys:
+                return None
+
+            # 一次 MGET 取回全部候选向量，避免逐键往返
+            payloads = await self.redis.mget(vector_keys)
+            best_similarity = 0.0
+            best_key: Optional[str] = None
+            for key, payload in zip(vector_keys, payloads):
+                similarity = self._cosine(current_vector, payload)
+                if similarity is not None and similarity > best_similarity:
+                    best_similarity = similarity
+                    best_key = key
+
+            if best_key is None or best_similarity < self.score_threshold:
+                return None
+
+            hash_id = best_key.split(":")[-1]
+            cached_response = await self.redis.get(f"{self.prefix}:resp:{hash_id}")
+            if not cached_response:
+                return None
+
+            await self._update_metadata(user_message)
+            logger.info(f"Cache hit with similarity: {best_similarity:.4f}")
+            return cached_response.decode("utf-8")
+
+        except Exception:
+            logger.warning("语义缓存查询失败，已降级为直接调用模型", exc_info=True)
             return None
 
     async def update(self, messages: List[Dict], response: str, expire: int = None):
-        """更新缓存"""
+        """写入缓存项（向量 + 回答 + 元数据），失败只记录日志。"""
         try:
             user_message = self._get_last_user_message(messages)
-            if not user_message:
+            if not user_message or not response:
                 return
 
             vector = await self._get_embedding(user_message)
-            
-            vec_key = self._get_vector_key(user_message)
-            resp_key = self._get_response_key(user_message)
-            meta_key = self._get_metadata_key(user_message)
-            
             expire = expire or settings.REDIS_CACHE_EXPIRE
-            
-            # 存储向量、响应和元数据 - 确保存储为字符串
-            self.redis.set(vec_key, json.dumps(vector), ex=expire)
-            self.redis.set(resp_key, response.encode('utf-8'), ex=expire)  # 编码为bytes
-            
-            metadata = {
-                "created_at": datetime.now().timestamp(),
-                "last_access": datetime.now().timestamp(),
-                "access_count": 1
-            }
-            self.redis.set(meta_key, json.dumps(metadata), ex=expire)
-            
+            now = time.monotonic()
+
+            # 用 pipeline 合并三次写入，减少网络往返
+            async with self.redis.pipeline(transaction=False) as pipe:
+                pipe.set(
+                    self._get_vector_key(user_message),
+                    np.asarray(vector, dtype=_VECTOR_DTYPE).tobytes(),
+                    ex=expire,
+                )
+                pipe.set(self._get_response_key(user_message), response, ex=expire)
+                pipe.set(
+                    self._get_metadata_key(user_message),
+                    json.dumps(
+                        {"created_at": now, "last_access": now, "access_count": 1}
+                    ),
+                    ex=expire,
+                )
+                await pipe.execute()
+
             logger.info(f"Cache updated for message: {user_message[:50]}...")
-            
-        except Exception as e:
-            logger.error(f"Error in update: {str(e)}", exc_info=True)
+
+        except Exception:
+            logger.warning("语义缓存写入失败，不影响本次回答", exc_info=True)
+
+    @staticmethod
+    def _cosine(vector: np.ndarray, payload: Any) -> Optional[float]:
+        """计算查询向量与缓存向量的余弦相似度；数据不可用时返回 None。"""
+        try:
+            if not payload:
+                return None
+            cached = np.frombuffer(payload, dtype=_VECTOR_DTYPE)
+            if cached.size != vector.size:
+                return None
+            denominator = float(np.linalg.norm(vector)) * float(np.linalg.norm(cached))
+            if not denominator:
+                return None
+            return float(np.dot(vector, cached) / denominator)
+        except (TypeError, ValueError):
+            return None
