@@ -1,0 +1,54 @@
+# 构建上下文是 dashscope_agent/，这里排除一切「运行不需要 / 不该进镜像」的东西
+
+# ---- 密钥与本地配置：绝不进镜像 ----
+.env
+.env.*
+!.env.example
+
+# ---- 版本控制与外部只读镜像 ----
+.git
+.gitignore
+.github-public
+AGENTS.md
+PROCESS.md
+INTERVIEW_GUIDE.md
+README.md
+docs/
+*.md
+
+# ---- Python 缓存与虚拟环境 ----
+**/__pycache__/
+**/*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- 测试与离线评测（体积大，运行不需要）----
+**/tests/
+**/test/
+**/evals/
+**/test_data/
+**/examples_notebooks/
+**/requirements-eval.txt
+
+# ---- 陈旧产物与嵌套副本 ----
+**/static/dist.zip
+**/llm_backend/llm_backend/
+
+# ---- 运行期产物、本地数据与日志（应由卷挂载提供）----
+**/uploads/
+**/.tmp/
+**/logs/
+**/*.log
+**/data/output/
+**/data/lancedb/
+**/data/pdf_outputs/
+**/data/pdf_csv_exports/
+**/data/prompt_turn_output/
+**/data/update_output/
+**/inputs/
+**/*.ipynb
+**/*.pdf
+**/*.csv
+**/*.parquet
